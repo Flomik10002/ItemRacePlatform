@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "test:server": "node --test tests/server.protocol.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

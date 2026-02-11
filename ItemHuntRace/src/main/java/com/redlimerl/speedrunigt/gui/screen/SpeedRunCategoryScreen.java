@@ -1,0 +1,154 @@
+package com.redlimerl.speedrunigt.gui.screen;
+
+import com.redlimerl.speedrunigt.option.SpeedRunOption;
+import com.redlimerl.speedrunigt.option.SpeedRunOptions;
+import com.redlimerl.speedrunigt.race.RaceSessionManager;
+import com.redlimerl.speedrunigt.timer.InGameTimer;
+import com.redlimerl.speedrunigt.timer.TimerStatus;
+import com.redlimerl.speedrunigt.timer.category.CustomCategoryManager;
+import com.redlimerl.speedrunigt.timer.category.RunCategory;
+import com.redlimerl.speedrunigt.utils.ButtonWidgetHelper;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.Element;
+import net.minecraft.client.gui.Selectable;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.CheckboxWidget;
+import net.minecraft.client.gui.widget.ClickableWidget;
+import net.minecraft.client.gui.widget.ElementListWidget;
+import net.minecraft.client.input.AbstractInput;
+import net.minecraft.client.resource.language.I18n;
+import net.minecraft.screen.ScreenTexts;
+import net.minecraft.text.Text;
+import net.minecraft.util.Colors;
+import net.minecraft.util.Util;
+import org.apache.commons.compress.utils.Lists;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class SpeedRunCategoryScreen extends Screen {
+
+    private final Screen parent;
+    private CategorySelectionListWidget listWidget;
+
+    public SpeedRunCategoryScreen(Screen parent) {
+        super(Text.translatable("speedrunigt.option.timer_category"));
+        CustomCategoryManager.init(false);
+        this.parent = parent;
+    }
+
+    @Override
+    protected void init() {
+        assert client != null;
+        addDrawableChild(ButtonWidgetHelper.create(width / 2 - 100, height - 35, 200, 20, ScreenTexts.CANCEL, button -> client.setScreen(parent)));
+
+        this.listWidget = new CategorySelectionListWidget(client);
+        addSelectableChild(listWidget);
+    }
+
+    @Override
+    public void close() {
+        if (this.client != null) this.client.setScreen(parent);
+    }
+
+    @Override
+    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        super.render(context, mouseX, mouseY, delta);
+        this.listWidget.render(context, mouseX, mouseY, delta);
+        context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 16, Colors.WHITE);
+        context.drawCenteredTextWithShadow(this.textRenderer, "(" + I18n.translate("speedrunigt.option.timer_category.warning") + ")", this.width / 2, this.height - 46, 8421504);
+    }
+
+    @Environment(EnvType.CLIENT)
+    class CategorySelectionListWidget extends ElementListWidget<CategorySelectionListWidget.CategoryEntry> {
+        private final List<CategoryEntry> entryList = Lists.newArrayList();
+        public CategorySelectionListWidget(MinecraftClient client) {
+            super(client, SpeedRunCategoryScreen.this.width, SpeedRunCategoryScreen.this.height - 87, 32, 24);
+
+            entryList.addAll(RunCategory.getCategories().values().stream().filter(runCategory -> !runCategory.isHideCategory()).map(CategoryEntry::new).toList());
+            this.replaceEntries(entryList);
+        }
+
+        @Override
+        protected int getScrollbarX() {
+            return super.getScrollbarX() + 30;
+        }
+
+        public static class EmptyInput implements AbstractInput {
+            @Override
+            public int getKeycode() {
+                return 0;
+            }
+
+            @Override
+            public int modifiers() {
+                return 0;
+            }
+        }
+
+        @Environment(EnvType.CLIENT)
+        public class CategoryEntry extends ElementListWidget.Entry<CategoryEntry> {
+
+            private final ArrayList<ClickableWidget> children = new ArrayList<>();
+            private final CheckboxWidget checkBox;
+            private final ButtonWidget urlButton;
+
+            public CategoryEntry(RunCategory category) {
+                this.checkBox = CheckboxWidget.builder(category.getText(), textRenderer)
+                        .checked((InGameTimer.getInstance().getStatus() != TimerStatus.NONE ? InGameTimer.getInstance().getCategory()
+                                : SpeedRunOption.getOption(SpeedRunOptions.TIMER_CATEGORY)) == category)
+                        .callback((checkbox, checked) -> {
+                            // CheckboxWidget#onPress both toggles the checkbox and runs this callback,
+                            // so we just ignore any calls from checkboxes that are being disabled
+                           if (!checked) {
+                               // disallow disabling the selected checkbox by re-selecting it if it is deselected
+                               if (entryList.stream().noneMatch(categoryEntry -> categoryEntry.checkBox.isChecked())) {
+                                   checkbox.onPress(new EmptyInput());
+                               }
+                               return;
+                           }
+                            for (CategoryEntry entry : entryList) {
+                                // make sure we're not unchecking the one we just checked
+                                if (entry.checkBox.isChecked() && entry != this) {
+                                    entry.checkBox.onPress(new EmptyInput());
+                                }
+                            }
+                            SpeedRunOption.setOption(SpeedRunOptions.TIMER_CATEGORY, category);
+                            InGameTimer.getInstance().setCategory(category, true);
+                            InGameTimer.getInstance().setUncompleted(true);
+                        })
+                        .pos(0, 0)
+                        .build();
+                this.checkBox.active = !RaceSessionManager.getInstance().isRaceControlsLocked();
+                this.urlButton = ButtonWidgetHelper.create(0, 0, 30, 20, Text.translatable("speedrunigt.option.more"), button -> Util.getOperatingSystem().open(category.getLeaderboardUrl()));
+                children.add(urlButton);
+                children.add(checkBox);
+            }
+
+            @Override
+            public void render(DrawContext context, int mouseX, int mouseY, boolean hovered, float deltaTicks) {
+                this.urlButton.setX(this.getX());
+                this.urlButton.setY(this.getY());
+                this.urlButton.render(context, mouseX, mouseY, deltaTicks);
+                this.checkBox.setX(this.getX() + 34);
+                this.checkBox.setY(this.getY());
+                this.checkBox.render(context, mouseX, mouseY, deltaTicks);
+            }
+
+            @Override
+            public List<? extends Element> children() {
+                return children;
+            }
+
+            @Override
+            public List<? extends Selectable> selectableChildren() {
+                return children;
+            }
+
+        }
+    }
+}
