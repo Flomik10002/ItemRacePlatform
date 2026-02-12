@@ -118,7 +118,7 @@ fun buildProtocolCatalog(): ProtocolCatalog {
             ProtocolMessageSpec(
                 type = RaceMessageTypes.ADVANCEMENT,
                 direction = "client_to_server",
-                description = "Report completed advancement for room broadcast notifications.",
+                description = "Report completed advancement for room broadcast notifications. Root advancements are ignored.",
                 fields = listOf(
                     ProtocolFieldSpec("id", "string", true, "Advancement identifier."),
                 ),

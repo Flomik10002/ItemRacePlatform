@@ -15,6 +15,7 @@ import dev.flomik.race.transport.ServerMessage
 import dev.flomik.race.transport.StateMessage
 import dev.flomik.race.transport.WelcomeMessage
 import dev.flomik.race.transport.toDto
+import dev.flomik.race.transport.isIgnorableAdvancementId
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.routing.routing
@@ -205,6 +206,8 @@ fun Application.configureSockets(
                                 val actor = currentPlayerId
                                 if (actor == null) {
                                     sendError("NOT_AUTHENTICATED", "Send 'hello' first")
+                                } else if (isIgnorableAdvancementId(parsed.id)) {
+                                    // Ignore root advancements like minecraft:story/root.
                                 } else {
                                     val event = raceService.reportAdvancement(actor, parsed.id)
                                     for (targetPlayerId in event.recipientPlayerIds) {

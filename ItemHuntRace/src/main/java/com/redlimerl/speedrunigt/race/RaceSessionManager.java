@@ -417,6 +417,7 @@ public final class RaceSessionManager {
     public void sendAdvancementAchieved(Identifier id) {
         if (id == null) return;
         if (state != RaceState.RUNNING && state != RaceState.STARTING) return;
+        if (isIgnorableAdvancement(id)) return;
 
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "advancement");
@@ -660,7 +661,7 @@ public final class RaceSessionManager {
             case "advancement" -> {
                 String playerName = getString(msg, "playerName");
                 String advancementId = getString(msg, "advancementId");
-                if (playerName != null && advancementId != null) {
+                if (playerName != null && advancementId != null && !isIgnorableAdvancement(advancementId)) {
                     sendSystemChat(
                             Text.translatable("speedrunigt.race.chat.advancement", playerName, advancementId)
                                     .formatted(Formatting.GRAY)
@@ -1044,6 +1045,21 @@ public final class RaceSessionManager {
         }
 
         return null;
+    }
+
+    private static boolean isIgnorableAdvancement(Identifier id) {
+        if (id == null) return true;
+        return isIgnorableAdvancement(id.toString());
+    }
+
+    private static boolean isIgnorableAdvancement(String advancementId) {
+        if (advancementId == null) return true;
+        String normalized = advancementId.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) return true;
+
+        int delimiter = normalized.indexOf(':');
+        String path = delimiter >= 0 ? normalized.substring(delimiter + 1) : normalized;
+        return "root".equals(path) || path.endsWith("/root");
     }
 
     private static boolean getBoolean(JsonObject obj, String key, boolean fallback) {

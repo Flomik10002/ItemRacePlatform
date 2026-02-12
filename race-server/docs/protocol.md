@@ -31,6 +31,7 @@ Server responds:
 - `finish` (`rttMs`, `igtMs`)
 - `death`
 - `advancement` (`id`)
+  - note: ids with path `root` or ending `/root` are ignored (no broadcast)
 
 ## Server -> Client Events
 
