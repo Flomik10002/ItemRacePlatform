@@ -5,7 +5,9 @@ import com.redlimerl.speedrunigt.instance.GameInstance;
 import com.redlimerl.speedrunigt.mixins.access.FontManagerAccessor;
 import com.redlimerl.speedrunigt.mixins.access.MinecraftClientAccessor;
 import com.redlimerl.speedrunigt.option.SpeedRunOption;
+import com.redlimerl.speedrunigt.race.RaceLeaveWorldConfirmScreen;
 import com.redlimerl.speedrunigt.race.RaceSessionManager;
+import com.redlimerl.speedrunigt.race.RaceState;
 import com.redlimerl.speedrunigt.race.TargetItemTracker;
 import com.redlimerl.speedrunigt.timer.*;
 import com.redlimerl.speedrunigt.timer.category.RunCategories;
@@ -16,6 +18,7 @@ import net.minecraft.client.font.Font;
 import net.minecraft.client.font.FontFilterType;
 import net.minecraft.client.font.FontStorage;
 import net.minecraft.client.font.GlyphBaker;
+import net.minecraft.client.gui.screen.GameMenuScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.world.LevelLoadingScreen;
 import net.minecraft.client.option.GameOptions;
@@ -23,6 +26,7 @@ import net.minecraft.client.world.ClientWorld;
 import net.minecraft.resource.ReloadableResourceManagerImpl;
 import net.minecraft.resource.ResourceManager;
 import net.minecraft.resource.SinglePreparationResourceReloader;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.crash.CrashReport;
 import net.minecraft.util.profiler.Profiler;
@@ -47,9 +51,14 @@ public abstract class MinecraftClientMixin {
 
     @Shadow @Nullable public ClientWorld world;
 
+    @Shadow @Nullable public Screen currentScreen;
+
     @Shadow @Final private ReloadableResourceManagerImpl resourceManager;
 
     @Shadow private boolean paused;
+
+    @Unique
+    private boolean raceBypassLeaveWorldPrompt = false;
 
     @Inject(method = "setScreen", at = @At("RETURN"))
     public void onSetScreen(Screen screen, CallbackInfo ci) {
@@ -196,11 +205,55 @@ public abstract class MinecraftClientMixin {
     }
 
     // Disconnecting fix
-    @Inject(at = @At("HEAD"), method = "disconnect*")
+    @Inject(at = @At("HEAD"), method = "disconnect*", cancellable = true)
     public void disconnect(CallbackInfo ci) {
+        if (shouldShowRaceLeavePrompt()) {
+            ci.cancel();
+            openRaceLeavePrompt();
+            return;
+        }
+
         if (InGameTimer.getInstance().getStatus() != TimerStatus.NONE && InGameTimerUtils.CAN_DISCONNECT) {
             GameInstance.getInstance().callEvents("leave_world");
             InGameTimer.leave();
         }
+    }
+
+    @Unique
+    private boolean shouldShowRaceLeavePrompt() {
+        if (raceBypassLeaveWorldPrompt) return false;
+        if (world == null) return false;
+        if (!(currentScreen instanceof GameMenuScreen)) return false;
+        if (currentScreen instanceof RaceLeaveWorldConfirmScreen) return false;
+
+        RaceState state = RaceSessionManager.getInstance().getState();
+        return state == RaceState.RUNNING || state == RaceState.STARTING;
+    }
+
+    @Unique
+    private void openRaceLeavePrompt() {
+        MinecraftClient client = (MinecraftClient) (Object) this;
+        Screen parent = currentScreen;
+        client.setScreen(new RaceLeaveWorldConfirmScreen(
+                parent,
+                () -> disconnectWorldOnly(client),
+                () -> leaveMatchAndDisconnectWorld(client)
+        ));
+    }
+
+    @Unique
+    private void disconnectWorldOnly(MinecraftClient client) {
+        raceBypassLeaveWorldPrompt = true;
+        try {
+            client.disconnect(Text.translatable("menu.savingLevel"));
+        } finally {
+            raceBypassLeaveWorldPrompt = false;
+        }
+    }
+
+    @Unique
+    private void leaveMatchAndDisconnectWorld(MinecraftClient client) {
+        RaceSessionManager.getInstance().leaveRoom();
+        disconnectWorldOnly(client);
     }
 }
