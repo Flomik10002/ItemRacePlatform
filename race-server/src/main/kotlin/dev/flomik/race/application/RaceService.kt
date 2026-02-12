@@ -22,7 +22,16 @@ import dev.flomik.race.domain.finish
 import dev.flomik.race.domain.isActive
 import dev.flomik.race.domain.isTerminal
 import dev.flomik.race.domain.leave
+import dev.flomik.race.persistence.PersistedMatch
+import dev.flomik.race.persistence.PersistedMatchPlayer
+import dev.flomik.race.persistence.PersistedPendingMatch
+import dev.flomik.race.persistence.PersistedPlayer
+import dev.flomik.race.persistence.PersistedPlayerResult
+import dev.flomik.race.persistence.PersistedRoom
+import dev.flomik.race.persistence.PersistedState
+import dev.flomik.race.persistence.RaceStateStore
 import java.time.Duration
+import java.time.Instant
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.random.Random
@@ -38,8 +47,10 @@ class RaceService(
     private val clock: Clock = SystemClock,
     private val idGenerator: IdGenerator = UuidIdGenerator(),
     private val randomSource: RandomSource = KotlinRandomSource(),
+    private val stateStore: RaceStateStore? = null,
 ) {
     private val mutex = Mutex()
+    private var hydratedFromStore: Boolean = false
 
     private val roomsById = mutableMapOf<RoomId, Room>()
     private val roomIdByCode = mutableMapOf<String, RoomId>()
@@ -48,11 +59,17 @@ class RaceService(
     private val sessionsByPlayerId = mutableMapOf<PlayerId, PlayerSession>()
     private val playerRoomId = mutableMapOf<PlayerId, RoomId>()
 
+    suspend fun warmup() = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        validateGlobalState()
+    }
+
     suspend fun connect(
         playerId: PlayerId,
         name: String,
         requestedSessionId: SessionId?,
     ): ConnectResult = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         requirePlayerIdentity(playerId, name)
         val now = now()
 
@@ -71,11 +88,7 @@ class RaceService(
 
         val existingSession = sessionsByPlayerId[playerId]
         val resumed = requestedSessionId != null && existingSession?.sessionId == requestedSessionId
-        val sessionId = if (resumed) {
-            requestedSessionId
-        } else {
-            idGenerator.nextSessionId()
-        }!!
+        val sessionId = requestedSessionId?.takeIf { resumed } ?: idGenerator.nextSessionId()
 
         sessionsByPlayerId[playerId] = PlayerSession(
             sessionId = sessionId,
@@ -87,6 +100,7 @@ class RaceService(
 
         val affected = playersInSameRoom(playerId).ifEmpty { setOf(playerId) }
         validateGlobalState()
+        persistStateLocked()
         ConnectResult(
             sessionId = sessionId,
             resumed = resumed,
@@ -98,6 +112,7 @@ class RaceService(
         playerId: PlayerId,
         sessionId: SessionId,
     ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val session = sessionsByPlayerId[playerId] ?: return@withLock emptySet()
         if (session.sessionId != sessionId) return@withLock emptySet()
         if (session.connectionState == ConnectionState.DISCONNECTED) return@withLock emptySet()
@@ -109,6 +124,7 @@ class RaceService(
         playersById[playerId]?.lastSeenAt = now
 
         validateGlobalState()
+        persistStateLocked()
         playersInSameRoom(playerId).ifEmpty { setOf(playerId) }
     }
 
@@ -116,6 +132,7 @@ class RaceService(
         playerId: PlayerId,
         sessionId: SessionId,
     ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val session = sessionsByPlayerId[playerId] ?: return@withLock emptySet()
         if (session.sessionId != sessionId) return@withLock emptySet()
         if (session.connectionState != ConnectionState.DISCONNECTED) return@withLock emptySet()
@@ -132,6 +149,7 @@ class RaceService(
         if (match == null) {
             removePlayerFromRoom(room, playerId)
             validateGlobalState()
+            persistStateLocked()
             return@withLock affected
         }
 
@@ -148,10 +166,12 @@ class RaceService(
         completeMatchIfNeeded(room, match, now)
 
         validateGlobalState()
+        persistStateLocked()
         affected
     }
 
     suspend fun createRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         ensurePlayerConnected(playerId)
         if (playerRoomId.containsKey(playerId)) {
             throw DomainException("PLAYER_ALREADY_IN_ROOM", "Player is already in a room")
@@ -169,6 +189,7 @@ class RaceService(
         playerRoomId[playerId] = room.id
 
         validateGlobalState()
+        persistStateLocked()
         setOf(playerId)
     }
 
@@ -176,6 +197,7 @@ class RaceService(
         playerId: PlayerId,
         roomCodeRaw: String,
     ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         ensurePlayerConnected(playerId)
         if (playerRoomId.containsKey(playerId)) {
             throw DomainException("PLAYER_ALREADY_IN_ROOM", "Player is already in a room")
@@ -194,10 +216,12 @@ class RaceService(
         ensureLeader(room)
 
         validateGlobalState()
+        persistStateLocked()
         room.players.toSet()
     }
 
     suspend fun leaveRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -208,6 +232,7 @@ class RaceService(
         if (match == null) {
             removePlayerFromRoom(room, playerId)
             validateGlobalState()
+            persistStateLocked()
             return@withLock affected
         }
 
@@ -224,10 +249,12 @@ class RaceService(
         completeMatchIfNeeded(room, match, now)
 
         validateGlobalState()
+        persistStateLocked()
         affected
     }
 
     suspend fun rollMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -251,10 +278,12 @@ class RaceService(
         room.revisionCounter = revision
 
         validateGlobalState()
+        persistStateLocked()
         room.players.toSet()
     }
 
     suspend fun startMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -290,6 +319,7 @@ class RaceService(
         room.pendingRemovals.clear()
 
         validateGlobalState()
+        persistStateLocked()
         room.players.toSet()
     }
 
@@ -298,6 +328,7 @@ class RaceService(
         rttMs: Long,
         igtMs: Long,
     ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
         val match = activeMatch(room)
@@ -311,10 +342,12 @@ class RaceService(
         completeMatchIfNeeded(room, match, now)
 
         validateGlobalState()
+        persistStateLocked()
         room.players.toSet().plus(playerId)
     }
 
     suspend fun reportDeath(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
         val match = activeMatch(room)
@@ -328,10 +361,12 @@ class RaceService(
         completeMatchIfNeeded(room, match, now)
 
         validateGlobalState()
+        persistStateLocked()
         room.players.toSet().plus(playerId)
     }
 
     suspend fun snapshotFor(playerId: PlayerId): RaceSnapshot = mutex.withLock {
+        hydrateFromStoreIfNeeded()
         val profile = playersById[playerId]
             ?: throw DomainException("PLAYER_NOT_FOUND", "Player not registered")
         val session = sessionsByPlayerId[playerId]
@@ -348,6 +383,195 @@ class RaceService(
             ),
             room = room?.toView(),
         )
+    }
+
+    private suspend fun hydrateFromStoreIfNeeded() {
+        if (hydratedFromStore) {
+            return
+        }
+
+        val persisted = stateStore?.load()
+        if (persisted != null) {
+            importPersistedState(persisted)
+        }
+        hydratedFromStore = true
+    }
+
+    private suspend fun persistStateLocked() {
+        val store = stateStore ?: return
+        store.save(exportPersistedState())
+    }
+
+    private fun importPersistedState(state: PersistedState) {
+        roomsById.clear()
+        roomIdByCode.clear()
+        matchesById.clear()
+        playersById.clear()
+        sessionsByPlayerId.clear()
+        playerRoomId.clear()
+
+        for (player in state.players) {
+            playersById[player.id] = PlayerProfile(
+                id = player.id,
+                name = player.name,
+                createdAt = Instant.ofEpochMilli(player.createdAtMs),
+                lastSeenAt = Instant.ofEpochMilli(player.lastSeenAtMs),
+            )
+        }
+
+        for (persistedRoom in state.rooms) {
+            val room = Room(
+                id = persistedRoom.id,
+                code = persistedRoom.code,
+                players = LinkedHashSet(persistedRoom.players),
+                leaderId = persistedRoom.leaderId,
+                currentMatchId = persistedRoom.currentMatchId,
+                pendingMatch = persistedRoom.pendingMatch?.let {
+                    PendingMatchConfig(
+                        targetItem = it.targetItem,
+                        seed = it.seed,
+                        rolledAt = Instant.ofEpochMilli(it.rolledAtMs),
+                        revision = it.revision,
+                    )
+                },
+                revisionCounter = persistedRoom.revisionCounter,
+                pendingRemovals = LinkedHashSet(persistedRoom.pendingRemovals),
+            )
+
+            if (roomIdByCode.containsKey(room.code)) {
+                throw DomainException(
+                    "PERSISTENCE_CORRUPTED",
+                    "Duplicate room code '${room.code}' in persisted state",
+                )
+            }
+
+            roomsById[room.id] = room
+            roomIdByCode[room.code] = room.id
+
+            for (playerId in room.players) {
+                val previousRoomId = playerRoomId.put(playerId, room.id)
+                if (previousRoomId != null && previousRoomId != room.id) {
+                    throw DomainException(
+                        "PERSISTENCE_CORRUPTED",
+                        "Player '$playerId' belongs to multiple rooms in persisted state",
+                    )
+                }
+            }
+        }
+
+        for (persistedMatch in state.matches) {
+            val match = Match(
+                id = persistedMatch.id,
+                roomId = persistedMatch.roomId,
+                revision = persistedMatch.revision,
+                targetItem = persistedMatch.targetItem,
+                seed = persistedMatch.seed,
+                lifecycleStatus = parseEnum<MatchLifecycleStatus>(
+                    persistedMatch.lifecycleStatus,
+                    "match.lifecycleStatus",
+                ),
+                players = persistedMatch.players.associate { persistedPlayer ->
+                    val status = parseEnum<PlayerStatus>(persistedPlayer.status, "match.player.status")
+                    persistedPlayer.playerId to PlayerState(
+                        status = status,
+                        result = persistedPlayer.result?.let {
+                            PlayerResult(
+                                rttMs = it.rttMs,
+                                igtMs = it.igtMs,
+                            )
+                        },
+                        leaveReason = persistedPlayer.leaveReason?.let {
+                            parseEnum<LeaveReason>(it, "match.player.leaveReason")
+                        },
+                        leftAt = persistedPlayer.leftAtMs?.let(Instant::ofEpochMilli),
+                    )
+                }.toMutableMap(),
+                createdAt = Instant.ofEpochMilli(persistedMatch.createdAtMs),
+                updatedAt = Instant.ofEpochMilli(persistedMatch.updatedAtMs),
+                completedAt = persistedMatch.completedAtMs?.let(Instant::ofEpochMilli),
+            )
+            matchesById[match.id] = match
+        }
+    }
+
+    private fun exportPersistedState(): PersistedState {
+        return PersistedState(
+            savedAtMs = now().toEpochMilli(),
+            players = playersById.values
+                .sortedBy { it.id }
+                .map { player ->
+                    PersistedPlayer(
+                        id = player.id,
+                        name = player.name,
+                        createdAtMs = player.createdAt.toEpochMilli(),
+                        lastSeenAtMs = player.lastSeenAt.toEpochMilli(),
+                    )
+                },
+            rooms = roomsById.values
+                .sortedBy { it.id }
+                .map { room ->
+                    PersistedRoom(
+                        id = room.id,
+                        code = room.code,
+                        players = room.players.toList(),
+                        leaderId = room.leaderId,
+                        currentMatchId = room.currentMatchId,
+                        pendingMatch = room.pendingMatch?.let {
+                            PersistedPendingMatch(
+                                targetItem = it.targetItem,
+                                seed = it.seed,
+                                rolledAtMs = it.rolledAt.toEpochMilli(),
+                                revision = it.revision,
+                            )
+                        },
+                        revisionCounter = room.revisionCounter,
+                        pendingRemovals = room.pendingRemovals.toList(),
+                    )
+                },
+            matches = matchesById.values
+                .sortedBy { it.id }
+                .map { match ->
+                    PersistedMatch(
+                        id = match.id,
+                        roomId = match.roomId,
+                        revision = match.revision,
+                        targetItem = match.targetItem,
+                        seed = match.seed,
+                        lifecycleStatus = match.lifecycleStatus.name,
+                        players = match.players
+                            .entries
+                            .sortedBy { it.key }
+                            .map { (playerId, state) ->
+                                PersistedMatchPlayer(
+                                    playerId = playerId,
+                                    status = state.status.name,
+                                    result = state.result?.let {
+                                        PersistedPlayerResult(
+                                            rttMs = it.rttMs,
+                                            igtMs = it.igtMs,
+                                        )
+                                    },
+                                    leaveReason = state.leaveReason?.name,
+                                    leftAtMs = state.leftAt?.toEpochMilli(),
+                                )
+                            },
+                        createdAtMs = match.createdAt.toEpochMilli(),
+                        updatedAtMs = match.updatedAt.toEpochMilli(),
+                        completedAtMs = match.completedAt?.toEpochMilli(),
+                    )
+                },
+        )
+    }
+
+    private inline fun <reified T : Enum<T>> parseEnum(value: String, fieldName: String): T {
+        return try {
+            enumValueOf<T>(value)
+        } catch (_: IllegalArgumentException) {
+            throw DomainException(
+                "PERSISTENCE_CORRUPTED",
+                "Invalid enum value '$value' for '$fieldName'",
+            )
+        }
     }
 
     private fun ensurePlayerConnected(playerId: PlayerId) {

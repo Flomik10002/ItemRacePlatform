@@ -6,3 +6,6 @@ ktor:
         port: 8080
 race:
     reconnect-grace-ms: 45000
+    persistence:
+        enabled: true
+        file: ./race-server-data/state.json
