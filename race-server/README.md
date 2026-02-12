@@ -96,6 +96,7 @@ This starts:
 - `postgres` with persisted volume
 
 Default compose configuration uses postgres persistence.
+Docker build runs from `race-server` standalone settings, so `ItemHuntRace` module is excluded from container build.
 
 ## Deploy on host (Docker + Postgres)
 
