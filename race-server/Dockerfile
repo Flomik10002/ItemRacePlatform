@@ -2,7 +2,7 @@ FROM eclipse-temurin:21-jdk AS build
 WORKDIR /workspace
 
 COPY . .
-RUN chmod +x ./gradlew && ./gradlew :race-server:installDist --no-daemon
+RUN chmod +x ./race-server/gradlew && cd race-server && ./gradlew installDist --no-daemon
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
