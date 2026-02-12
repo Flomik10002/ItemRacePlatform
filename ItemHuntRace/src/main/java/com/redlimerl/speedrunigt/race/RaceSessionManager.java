@@ -96,6 +96,7 @@ public final class RaceSessionManager {
     private WebSocket webSocket = null;
     private String serverSessionId = null;
     private volatile boolean authenticated = false;
+    private volatile boolean helloInFlight = false;
 
     private final Queue<String> pendingMessages = new ConcurrentLinkedQueue<>();
     private final StringBuilder partialMessage = new StringBuilder();
@@ -287,7 +288,10 @@ public final class RaceSessionManager {
     }
 
     public void connect() {
-        if (connectionStatus == ConnectionStatus.CONNECTED && webSocket != null) return;
+        if (connectionStatus == ConnectionStatus.CONNECTED && webSocket != null) {
+            ensureHelloSent(webSocket);
+            return;
+        }
         if (connectionStatus == ConnectionStatus.CONNECTING) return;
 
         lastError = null;
@@ -314,6 +318,7 @@ public final class RaceSessionManager {
         this.webSocket = null;
         this.connectionStatus = ConnectionStatus.DISCONNECTED;
         this.authenticated = false;
+        this.helloInFlight = false;
         this.pendingMessages.clear();
         this.partialMessage.setLength(0);
 
@@ -489,20 +494,15 @@ public final class RaceSessionManager {
         this.lastError = null;
         this.lastReconnectAttemptAt = 0L;
         this.authenticated = false;
-
-        sendHello(ws).whenComplete((ignored, error) -> {
-            MinecraftClient.getInstance().execute(() -> {
-                if (error != null) {
-                    onConnectionFailed(error);
-                }
-            });
-        });
+        this.helloInFlight = false;
+        ensureHelloSent(ws);
     }
 
     private void onConnectionFailed(Throwable err) {
         this.connectionStatus = ConnectionStatus.DISCONNECTED;
         this.webSocket = null;
         this.authenticated = false;
+        this.helloInFlight = false;
         this.healthStatus = HealthStatus.OFFLINE;
         this.lastError = err != null ? err.getMessage() : "Connection failed";
     }
@@ -529,10 +529,14 @@ public final class RaceSessionManager {
         String type = getString(jsonObject, "type");
         WebSocket ws = webSocket;
 
-        if (connectionStatus != ConnectionStatus.CONNECTED || ws == null
-                || (requiresAuthenticatedSession(type) && !authenticated)) {
+        if (connectionStatus != ConnectionStatus.CONNECTED || ws == null) {
             pendingMessages.add(payload);
             connect();
+            return;
+        }
+        if (requiresAuthenticatedSession(type) && !authenticated) {
+            pendingMessages.add(payload);
+            ensureHelloSent(ws);
             return;
         }
 
@@ -584,6 +588,7 @@ public final class RaceSessionManager {
                     this.serverSessionId = sessionId;
                 }
                 this.authenticated = true;
+                this.helloInFlight = false;
                 lastError = null;
                 healthStatus = HealthStatus.ONLINE;
                 flushPending();
@@ -605,7 +610,15 @@ public final class RaceSessionManager {
 
                 if ("NOT_AUTHENTICATED".equals(code) && connectionStatus == ConnectionStatus.CONNECTED && webSocket != null) {
                     this.authenticated = false;
-                    sendHello(webSocket);
+                    this.helloInFlight = false;
+                    ensureHelloSent(webSocket);
+                }
+                if ("ALREADY_AUTHENTICATED".equals(code) && connectionStatus == ConnectionStatus.CONNECTED) {
+                    this.authenticated = true;
+                    this.helloInFlight = false;
+                    lastError = null;
+                    flushPending();
+                    sendSyncState();
                 }
                 if ("PLAYER_NOT_IN_ROOM".equals(code) || "ROOM_NOT_FOUND".equals(code)) {
                     resetToIdle();
@@ -977,6 +990,17 @@ public final class RaceSessionManager {
         return messageType != null && !"hello".equals(messageType) && !"ping".equals(messageType);
     }
 
+    private void ensureHelloSent(WebSocket ws) {
+        if (authenticated || helloInFlight) return;
+        helloInFlight = true;
+        sendHello(ws).whenComplete((ignored, error) -> MinecraftClient.getInstance().execute(() -> {
+            if (error != null) {
+                helloInFlight = false;
+                onConnectionFailed(error);
+            }
+        }));
+    }
+
     private void spawnFireworks() {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) return;
@@ -1049,6 +1073,7 @@ public final class RaceSessionManager {
                 connectionStatus = ConnectionStatus.DISCONNECTED;
                 RaceSessionManager.this.webSocket = null;
                 authenticated = false;
+                helloInFlight = false;
                 healthStatus = HealthStatus.OFFLINE;
                 lastError = reason == null || reason.isBlank() ? "Disconnected" : "Disconnected: " + reason;
             });
