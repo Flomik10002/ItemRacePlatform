@@ -79,7 +79,13 @@ fun buildProtocolCatalog(): ProtocolCatalog {
             ProtocolMessageSpec(
                 type = RaceMessageTypes.LEAVE_ROOM,
                 direction = "client_to_server",
-                description = "Leave current room (or active match with LEAVE state).",
+                description = "Leave current room completely.",
+                fields = emptyList(),
+            ),
+            ProtocolMessageSpec(
+                type = RaceMessageTypes.LEAVE_MATCH,
+                direction = "client_to_server",
+                description = "Mark self as LEAVE in active match without leaving room.",
                 fields = emptyList(),
             ),
             ProtocolMessageSpec(
@@ -118,7 +124,7 @@ fun buildProtocolCatalog(): ProtocolCatalog {
             ProtocolMessageSpec(
                 type = RaceMessageTypes.ADVANCEMENT,
                 direction = "client_to_server",
-                description = "Report completed advancement for room broadcast notifications.",
+                description = "Report completed advancement for room broadcast notifications. Root advancements are ignored.",
                 fields = listOf(
                     ProtocolFieldSpec("id", "string", true, "Advancement identifier."),
                 ),

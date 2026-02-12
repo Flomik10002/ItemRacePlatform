@@ -131,6 +131,36 @@ class RaceServiceLifecycleTest {
     }
 
     @Test
+    fun leaveMatchDuringActiveRaceKeepsPlayerInRoom() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        service.leaveMatch("p2")
+        val during = service.snapshotFor("p1").room
+        assertNotNull(during)
+        val p2State = during.currentMatch?.players?.firstOrNull { it.playerId == "p2" }
+        assertNotNull(p2State)
+        assertEquals(PlayerStatus.LEAVE, p2State.status)
+        assertEquals(LeaveReason.MANUAL, p2State.leaveReason)
+
+        service.finish("p1", rttMs = 1000, igtMs = 980)
+
+        val after = service.snapshotFor("p1").room
+        assertNotNull(after)
+        assertNull(after.currentMatch)
+        assertEquals(listOf("p1", "p2"), after.players.map { it.playerId })
+    }
+
+    @Test
     fun leaderCanCancelStartAndKeepRoomIntact() = runTest {
         val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
 

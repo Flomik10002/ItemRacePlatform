@@ -58,6 +58,16 @@ class RaceProtocolTest {
     }
 
     @Test
+    fun parseLeaveMatch() {
+        val parsed = ClientMessageParser.parse(
+            json,
+            """{"type":"leave_match"}""",
+        )
+
+        assertTrue(parsed is ClientMessage.LeaveMatch)
+    }
+
+    @Test
     fun parseAdvancement() {
         val parsed = ClientMessageParser.parse(
             json,

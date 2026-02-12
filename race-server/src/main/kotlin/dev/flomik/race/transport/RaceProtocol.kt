@@ -23,6 +23,7 @@ object RaceMessageTypes {
     const val CREATE_ROOM = "create_room"
     const val JOIN_ROOM = "join_room"
     const val LEAVE_ROOM = "leave_room"
+    const val LEAVE_MATCH = "leave_match"
     const val ROLL_MATCH = "roll_match"
     const val START_MATCH = "start_match"
     const val CANCEL_START = "cancel_start"
@@ -49,6 +50,7 @@ sealed interface ClientMessage {
     data object CreateRoom : ClientMessage
     data class JoinRoom(val roomCode: String) : ClientMessage
     data object LeaveRoom : ClientMessage
+    data object LeaveMatch : ClientMessage
     data object RollMatch : ClientMessage
     data object StartMatch : ClientMessage
     data object CancelStart : ClientMessage
@@ -79,6 +81,7 @@ object ClientMessageParser {
             RaceMessageTypes.CREATE_ROOM -> ClientMessage.CreateRoom
             RaceMessageTypes.JOIN_ROOM -> ClientMessage.JoinRoom(roomCode = root.requiredString("roomCode"))
             RaceMessageTypes.LEAVE_ROOM -> ClientMessage.LeaveRoom
+            RaceMessageTypes.LEAVE_MATCH -> ClientMessage.LeaveMatch
             RaceMessageTypes.ROLL_MATCH -> ClientMessage.RollMatch
             RaceMessageTypes.START_MATCH -> ClientMessage.StartMatch
             RaceMessageTypes.CANCEL_START -> ClientMessage.CancelStart
