@@ -17,6 +17,25 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
+object RaceMessageTypes {
+    const val HELLO = "hello"
+    const val PING = "ping"
+    const val CREATE_ROOM = "create_room"
+    const val JOIN_ROOM = "join_room"
+    const val LEAVE_ROOM = "leave_room"
+    const val ROLL_MATCH = "roll_match"
+    const val START_MATCH = "start_match"
+    const val FINISH = "finish"
+    const val DEATH = "death"
+    const val SYNC_STATE = "sync_state"
+
+    const val WELCOME = "welcome"
+    const val ACK = "ack"
+    const val ERROR = "error"
+    const val PONG = "pong"
+    const val STATE = "state"
+}
+
 sealed interface ClientMessage {
     data class Hello(
         val playerId: String,
@@ -46,25 +65,25 @@ object ClientMessageParser {
         }
 
         return when (root.requiredString("type")) {
-            "hello" -> ClientMessage.Hello(
+            RaceMessageTypes.HELLO -> ClientMessage.Hello(
                 playerId = root.requiredString("playerId"),
                 name = root.requiredString("name"),
                 sessionId = root.optionalString("sessionId"),
             )
 
-            "ping" -> ClientMessage.Ping
-            "create_room" -> ClientMessage.CreateRoom
-            "join_room" -> ClientMessage.JoinRoom(roomCode = root.requiredString("roomCode"))
-            "leave_room" -> ClientMessage.LeaveRoom
-            "roll_match" -> ClientMessage.RollMatch
-            "start_match" -> ClientMessage.StartMatch
-            "finish" -> ClientMessage.Finish(
+            RaceMessageTypes.PING -> ClientMessage.Ping
+            RaceMessageTypes.CREATE_ROOM -> ClientMessage.CreateRoom
+            RaceMessageTypes.JOIN_ROOM -> ClientMessage.JoinRoom(roomCode = root.requiredString("roomCode"))
+            RaceMessageTypes.LEAVE_ROOM -> ClientMessage.LeaveRoom
+            RaceMessageTypes.ROLL_MATCH -> ClientMessage.RollMatch
+            RaceMessageTypes.START_MATCH -> ClientMessage.StartMatch
+            RaceMessageTypes.FINISH -> ClientMessage.Finish(
                 rttMs = root.requiredLong("rttMs"),
                 igtMs = root.requiredLong("igtMs"),
             )
 
-            "death" -> ClientMessage.Death
-            "sync_state" -> ClientMessage.SyncState
+            RaceMessageTypes.DEATH -> ClientMessage.Death
+            RaceMessageTypes.SYNC_STATE -> ClientMessage.SyncState
             else -> throw ProtocolException("Unknown message type")
         }
     }
@@ -93,7 +112,7 @@ sealed interface ServerMessage
 
 @Serializable
 data class WelcomeMessage(
-    val type: String = "welcome",
+    val type: String = RaceMessageTypes.WELCOME,
     val playerId: String,
     val name: String,
     val sessionId: String,
@@ -103,27 +122,27 @@ data class WelcomeMessage(
 
 @Serializable
 data class AckMessage(
-    val type: String = "ack",
+    val type: String = RaceMessageTypes.ACK,
     val action: String,
     val message: String? = null,
 ) : ServerMessage
 
 @Serializable
 data class ErrorMessage(
-    val type: String = "error",
+    val type: String = RaceMessageTypes.ERROR,
     val code: String,
     val message: String,
 ) : ServerMessage
 
 @Serializable
 data class PongMessage(
-    val type: String = "pong",
+    val type: String = RaceMessageTypes.PONG,
     val serverTimeMs: Long,
 ) : ServerMessage
 
 @Serializable
 data class StateMessage(
-    val type: String = "state",
+    val type: String = RaceMessageTypes.STATE,
     val snapshot: SnapshotDto,
 ) : ServerMessage
 
