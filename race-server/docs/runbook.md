@@ -23,6 +23,23 @@ Default port: `8080`
 - `http://localhost:8080/docs/openapi.json`
 - `http://localhost:8080/docs/asyncapi.json`
 
+## Live E2E with mod client
+
+1. Start backend:
+   ```bash
+   ./gradlew :race-server:run
+   ```
+2. Launch mod client:
+   ```bash
+   ./gradlew :ItemHuntRace:runClient
+   ```
+3. In race lobby set server address to `ws://127.0.0.1:8080`.
+4. Validate flow:
+   - create room
+   - second player joins
+   - roll/start match
+   - finish/death updates leaderboard
+
 ## Persistence config
 
 `application.yaml`:

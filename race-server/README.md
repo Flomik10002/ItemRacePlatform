@@ -16,6 +16,20 @@ Server listens on `:8080` by default.
 ./gradlew :race-server:test
 ```
 
+## Live test with client mod
+
+1. Start server:
+   ```bash
+   ./gradlew :race-server:run
+   ```
+2. Start client mod:
+   ```bash
+   ./gradlew :ItemHuntRace:runClient
+   ```
+3. In race lobby set server address to:
+   - `ws://127.0.0.1:8080`
+4. Create/join room and run match flow.
+
 ## Main endpoints
 
 - `GET /` - service status
