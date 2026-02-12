@@ -19,7 +19,6 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.openfolder:kotlin-asyncapi-ktor:3.1.3")
     implementation("io.ktor:ktor-server-core")
     implementation("io.ktor:ktor-server-websockets")
     implementation("io.ktor:ktor-server-content-negotiation")
@@ -28,7 +27,10 @@ dependencies {
     implementation("io.ktor:ktor-server-netty")
     implementation("ch.qos.logback:logback-classic:$logback_version")
     implementation("io.ktor:ktor-server-config-yaml")
+    implementation("org.postgresql:postgresql:42.7.8")
     testImplementation("io.ktor:ktor-server-test-host")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
+    testImplementation("com.h2database:h2:2.3.232")
     implementation(project(":shared"))
 }

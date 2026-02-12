@@ -32,6 +32,8 @@
   "speedrunigt.race.copied_code": "Код комнаты скопирован: %s",
   "speedrunigt.race.stop": "СТОП",
   "speedrunigt.race.start_leader_only": "СТАРТ (только лидер)",
+  "speedrunigt.race.start_waiting_roll": "Ожидание ролла предмета...",
+  "speedrunigt.race.roll_item": "Ролл предмета",
   "speedrunigt.race.ui.subtitle": "Найди предмет. Обгони других. Победи.",
   "speedrunigt.race.ui.connected_to": "Подключено к: %s",
   "speedrunigt.race.ui.change": "СМЕНИТЬ",

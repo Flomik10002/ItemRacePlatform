@@ -12,3 +12,6 @@ out/
 
 # OS
 .DS_Store
+
+# Local runtime data
+race-server/race-server-data/

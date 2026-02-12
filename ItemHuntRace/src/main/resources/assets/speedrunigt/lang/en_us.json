@@ -33,6 +33,8 @@
   "speedrunigt.race.copied_code": "Copied room code: %s",
   "speedrunigt.race.stop": "STOP",
   "speedrunigt.race.start_leader_only": "START (leader only)",
+  "speedrunigt.race.start_waiting_roll": "Waiting for roll...",
+  "speedrunigt.race.roll_item": "Roll Item",
   "speedrunigt.race.ui.subtitle": "Find items. Beat others. Win.",
   "speedrunigt.race.ui.connected_to": "Connected to: %s",
   "speedrunigt.race.ui.change": "CHANGE",

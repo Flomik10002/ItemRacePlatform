@@ -1,44 +1,117 @@
 # race-server
 
-This project was created using the [Ktor Project Generator](https://start.ktor.io).
+`race-server` is the authoritative websocket backend for Item Race.
 
-Here are some useful links to get you started:
+## Quick start
 
-- [Ktor Documentation](https://ktor.io/docs/home.html)
-- [Ktor GitHub page](https://github.com/ktorio/ktor)
-- The [Ktor Slack chat](https://app.slack.com/client/T09229ZC6/C0A974TJ9). You'll need to [request an invite](https://surveys.jetbrains.com/s3/kotlin-slack-sign-up) to join.
-
-## Features
-
-Here's a list of features included in this project:
-
-| Name                                                                   | Description                                                                        |
-| ------------------------------------------------------------------------|------------------------------------------------------------------------------------ |
-| [AsyncAPI](https://start.ktor.io/p/asyncapi)                           | Generates and serves AsyncAPI documentation                                        |
-| [Routing](https://start.ktor.io/p/routing)                             | Provides a structured routing DSL                                                  |
-| [WebSockets](https://start.ktor.io/p/ktor-websockets)                  | Adds WebSocket protocol support for bidirectional client connections               |
-| [Content Negotiation](https://start.ktor.io/p/content-negotiation)     | Provides automatic content conversion according to Content-Type and Accept headers |
-| [kotlinx.serialization](https://start.ktor.io/p/kotlinx-serialization) | Handles JSON serialization using kotlinx.serialization library                     |
-| [Call Logging](https://start.ktor.io/p/call-logging)                   | Logs client requests                                                               |
-
-## Building & Running
-
-To build or run the project, use one of the following tasks:
-
-| Task                                    | Description                                                          |
-| -----------------------------------------|---------------------------------------------------------------------- |
-| `./gradlew test`                        | Run the tests                                                        |
-| `./gradlew build`                       | Build everything                                                     |
-| `./gradlew buildFatJar`                 | Build an executable JAR of the server with all dependencies included |
-| `./gradlew buildImage`                  | Build the docker image to use with the fat JAR                       |
-| `./gradlew publishImageToLocalRegistry` | Publish the docker image locally                                     |
-| `./gradlew run`                         | Run the server                                                       |
-| `./gradlew runDocker`                   | Run using the local docker image                                     |
-
-If the server starts successfully, you'll see the following output:
-
-```
-2024-12-04 14:32:45.584 [main] INFO  Application - Application started in 0.303 seconds.
-2024-12-04 14:32:45.682 [main] INFO  Application - Responding at http://0.0.0.0:8080
+```bash
+./gradlew :race-server:run
 ```
 
+Server listens on `:8080` by default.
+
+## Test
+
+```bash
+./gradlew :race-server:test
+```
+
+## Live test with client mod
+
+1. Start server:
+   ```bash
+   ./gradlew :race-server:run
+   ```
+2. Start client mod:
+   ```bash
+   ./gradlew :ItemHuntRace:runClient
+   ```
+3. In race lobby set server address to:
+   - `ws://127.0.0.1:8080`
+4. Create/join room and run match flow.
+
+## Main endpoints
+
+- `GET /` - service status
+- `GET /health` - health check
+- `WS /race` - race protocol endpoint
+
+## Docs endpoints
+
+- `GET /docs` - human-readable docs index
+- `GET /docs/protocol` - structured protocol catalog
+- `GET /docs/openapi.json` - OpenAPI for HTTP endpoints
+- `GET /docs/asyncapi.json` - AsyncAPI for websocket protocol
+
+## Additional docs
+
+- `docs/architecture.md`
+- `docs/protocol.md`
+- `docs/runbook.md`
+
+## Persistence
+
+Configured in `src/main/resources/application.yaml`:
+
+```yaml
+race:
+  persistence:
+    enabled: true
+    provider: file # file | postgres
+    file: ./race-server-data/state.json
+    postgres:
+      url: jdbc:postgresql://localhost:5432/itemrace
+      user: itemrace
+      password: itemrace
+```
+
+When enabled, server snapshots state and restores on boot.
+
+Environment variables (override config):
+
+- `RACE_PERSISTENCE_ENABLED`
+- `RACE_PERSISTENCE_PROVIDER`
+- `RACE_PERSISTENCE_FILE`
+- `RACE_DB_URL`
+- `RACE_DB_USER`
+- `RACE_DB_PASSWORD`
+- `RACE_RECONNECT_GRACE_MS`
+- `RACE_TARGET_ITEMS_FILE`
+
+Target items are loaded from:
+
+- external file (`RACE_TARGET_ITEMS_FILE` / `race.target-items-file`) when set
+- otherwise from classpath `src/main/resources/items.txt`
+
+## Docker deployment
+
+```bash
+cd race-server
+docker compose up --build
+```
+
+This starts:
+
+- `race-server` on `:8080`
+- `postgres` with persisted volume
+
+Default compose configuration uses postgres persistence.
+
+## Deploy on host (Docker + Postgres)
+
+1. Copy repository to host and install Docker Engine + Docker Compose plugin.
+2. Edit target item pool in `race-server/config/items.txt`.
+3. (Optional) Change DB credentials and ports in `race-server/docker-compose.yml`.
+4. Start:
+   ```bash
+   cd race-server
+   docker compose up -d --build
+   ```
+5. Check status/logs:
+   ```bash
+   docker compose ps
+   docker compose logs -f race-server
+   ```
+6. Verify:
+   - `http://<host>:8080/health`
+   - `http://<host>:8080/docs`
