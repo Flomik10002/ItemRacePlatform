@@ -13,6 +13,9 @@ import dev.flomik.race.domain.PlayerResult
 import dev.flomik.race.domain.PlayerSession
 import dev.flomik.race.domain.PlayerState
 import dev.flomik.race.domain.PlayerStatus
+import dev.flomik.race.domain.ReadyCheck
+import dev.flomik.race.domain.ReadyCheckResponse
+import dev.flomik.race.domain.ReadyCheckStatus
 import dev.flomik.race.domain.Room
 import dev.flomik.race.domain.RoomId
 import dev.flomik.race.domain.SessionId
@@ -27,6 +30,8 @@ import dev.flomik.race.persistence.PersistedMatchPlayer
 import dev.flomik.race.persistence.PersistedPendingMatch
 import dev.flomik.race.persistence.PersistedPlayer
 import dev.flomik.race.persistence.PersistedPlayerResult
+import dev.flomik.race.persistence.PersistedReadyCheck
+import dev.flomik.race.persistence.PersistedReadyCheckResponse
 import dev.flomik.race.persistence.PersistedRoom
 import dev.flomik.race.persistence.PersistedState
 import dev.flomik.race.persistence.RaceStateStore
@@ -89,6 +94,7 @@ class RaceService(
         hydrateFromStoreIfNeeded()
         requirePlayerIdentity(playerId, name)
         val now = now()
+        pruneExpiredReadyChecks(now)
 
         val profile = playersById[playerId]
         if (profile == null) {
@@ -130,11 +136,11 @@ class RaceService(
         sessionId: SessionId,
     ): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
         val session = sessionsByPlayerId[playerId] ?: return@withLock emptySet()
         if (session.sessionId != sessionId) return@withLock emptySet()
         if (session.connectionState == ConnectionState.DISCONNECTED) return@withLock emptySet()
-
-        val now = now()
         session.connectionState = ConnectionState.DISCONNECTED
         session.disconnectedAt = now
         session.lastSeenAt = now
@@ -150,12 +156,13 @@ class RaceService(
         sessionId: SessionId,
     ): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
         val session = sessionsByPlayerId[playerId] ?: return@withLock emptySet()
         if (session.sessionId != sessionId) return@withLock emptySet()
         if (session.connectionState != ConnectionState.DISCONNECTED) return@withLock emptySet()
 
         val disconnectedAt = session.disconnectedAt ?: return@withLock emptySet()
-        val now = now()
         val disconnectedForMs = Duration.between(disconnectedAt, now).toMillis()
         if (disconnectedForMs < reconnectGraceMs) return@withLock emptySet()
 
@@ -196,6 +203,7 @@ class RaceService(
 
     suspend fun createRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         ensurePlayerConnected(playerId)
         if (playerRoomId.containsKey(playerId)) {
             throw DomainException("PLAYER_ALREADY_IN_ROOM", "Player is already in a room")
@@ -222,6 +230,7 @@ class RaceService(
         roomCodeRaw: String,
     ): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         ensurePlayerConnected(playerId)
         if (playerRoomId.containsKey(playerId)) {
             throw DomainException("PLAYER_ALREADY_IN_ROOM", "Player is already in a room")
@@ -237,6 +246,7 @@ class RaceService(
 
         room.players.add(playerId)
         playerRoomId[playerId] = room.id
+        room.readyCheck = null
         ensureLeader(room)
 
         validateGlobalState()
@@ -246,6 +256,7 @@ class RaceService(
 
     suspend fun leaveMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
         val match = activeMatch(room)
@@ -268,6 +279,7 @@ class RaceService(
 
     suspend fun leaveRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -301,6 +313,7 @@ class RaceService(
 
     suspend fun rollMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -312,6 +325,7 @@ class RaceService(
         val now = now()
         val revision = room.revisionCounter + 1
         val seed = randomSource.nextLong()
+        room.readyCheck = null
         room.pendingMatch = PendingMatchConfig(
             targetItem = pickTargetItem(seed),
             seed = seed,
@@ -327,6 +341,7 @@ class RaceService(
 
     suspend fun startMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -359,6 +374,7 @@ class RaceService(
         matchesById[match.id] = match
         room.currentMatchId = match.id
         room.pendingMatch = null
+        room.readyCheck = null
         room.pendingRemovals.clear()
 
         validateGlobalState()
@@ -368,6 +384,7 @@ class RaceService(
 
     suspend fun cancelStart(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
@@ -385,6 +402,7 @@ class RaceService(
         val now = now()
         match.complete(now)
         room.currentMatchId = null
+        room.readyCheck = null
         room.pendingRemovals.clear()
         room.pendingMatch = PendingMatchConfig(
             targetItem = match.targetItem,
@@ -399,12 +417,68 @@ class RaceService(
         room.players.toSet()
     }
 
+    suspend fun startReadyCheck(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+
+        val room = findRoomByPlayer(playerId)
+            ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
+        ensureLeader(room, playerId)
+        if (activeMatch(room) != null) {
+            throw DomainException("MATCH_ALREADY_ACTIVE", "Cannot start ready check while match is active")
+        }
+
+        room.readyCheck = ReadyCheck(
+            initiatedBy = playerId,
+            startedAt = now,
+            expiresAt = now.plusMillis(READY_CHECK_TTL_MS),
+            responses = mutableMapOf(),
+        )
+
+        validateGlobalState()
+        persistStateLocked()
+        room.players.toSet()
+    }
+
+    suspend fun respondReadyCheck(
+        playerId: PlayerId,
+        ready: Boolean,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+
+        val room = findRoomByPlayer(playerId)
+            ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
+        if (activeMatch(room) != null) {
+            throw DomainException("MATCH_ALREADY_ACTIVE", "Ready check responses are disabled while match is active")
+        }
+
+        val readyCheck = room.readyCheck
+            ?: throw DomainException("READY_CHECK_NOT_ACTIVE", "No active ready check in this room")
+        if (!now.isBefore(readyCheck.expiresAt)) {
+            room.readyCheck = null
+            throw DomainException("READY_CHECK_NOT_ACTIVE", "No active ready check in this room")
+        }
+
+        readyCheck.responses[playerId] = ReadyCheckResponse(
+            status = if (ready) ReadyCheckStatus.READY else ReadyCheckStatus.NOT_READY,
+            respondedAt = now,
+        )
+
+        validateGlobalState()
+        persistStateLocked()
+        room.players.toSet()
+    }
+
     suspend fun finish(
         playerId: PlayerId,
         rttMs: Long,
         igtMs: Long,
     ): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
         val match = activeMatch(room)
@@ -424,6 +498,7 @@ class RaceService(
 
     suspend fun reportDeath(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
         val match = activeMatch(room)
@@ -446,6 +521,7 @@ class RaceService(
         advancementIdRaw: String,
     ): AdvancementBroadcast = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val advancementId = advancementIdRaw.trim()
         if (advancementId.isBlank()) {
             throw DomainException("INVALID_ADVANCEMENT", "advancement id must be non-empty")
@@ -477,6 +553,7 @@ class RaceService(
 
     suspend fun snapshotFor(playerId: PlayerId): RaceSnapshot = mutex.withLock {
         hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
         val profile = playersById[playerId]
             ?: throw DomainException("PLAYER_NOT_FOUND", "Player not registered")
         val session = sessionsByPlayerId[playerId]
@@ -542,6 +619,22 @@ class RaceService(
                         seed = it.seed,
                         rolledAt = Instant.ofEpochMilli(it.rolledAtMs),
                         revision = it.revision,
+                    )
+                },
+                readyCheck = persistedRoom.readyCheck?.let { persistedReady ->
+                    ReadyCheck(
+                        initiatedBy = persistedReady.initiatedBy,
+                        startedAt = Instant.ofEpochMilli(persistedReady.startedAtMs),
+                        expiresAt = Instant.ofEpochMilli(persistedReady.expiresAtMs),
+                        responses = persistedReady.responses.associate { response ->
+                            response.playerId to ReadyCheckResponse(
+                                status = parseEnum<ReadyCheckStatus>(
+                                    response.status,
+                                    "room.readyCheck.responses.status",
+                                ),
+                                respondedAt = Instant.ofEpochMilli(response.respondedAtMs),
+                            )
+                        }.toMutableMap(),
                     )
                 },
                 revisionCounter = persistedRoom.revisionCounter,
@@ -634,6 +727,23 @@ class RaceService(
                                 revision = it.revision,
                             )
                         },
+                        readyCheck = room.readyCheck?.let { readyCheck ->
+                            PersistedReadyCheck(
+                                initiatedBy = readyCheck.initiatedBy,
+                                startedAtMs = readyCheck.startedAt.toEpochMilli(),
+                                expiresAtMs = readyCheck.expiresAt.toEpochMilli(),
+                                responses = readyCheck.responses
+                                    .entries
+                                    .sortedBy { it.key }
+                                    .map { (playerId, response) ->
+                                        PersistedReadyCheckResponse(
+                                            playerId = playerId,
+                                            status = response.status.name,
+                                            respondedAtMs = response.respondedAt.toEpochMilli(),
+                                        )
+                                    },
+                            )
+                        },
                         revisionCounter = room.revisionCounter,
                         pendingRemovals = room.pendingRemovals.toList(),
                     )
@@ -719,6 +829,7 @@ class RaceService(
         room.players.remove(playerId)
         room.pendingRemovals.remove(playerId)
         playerRoomId.remove(playerId)
+        room.readyCheck = null
 
         if (room.players.isEmpty()) {
             deleteRoom(room)
@@ -758,6 +869,17 @@ class RaceService(
         val removals = room.pendingRemovals.toList()
         room.pendingRemovals.clear()
         removals.forEach { removePlayerFromRoom(room, it) }
+    }
+
+    private fun pruneExpiredReadyChecks(now: Instant) {
+        for (room in roomsById.values) {
+            val readyCheck = room.readyCheck ?: continue
+            if (!now.isBefore(readyCheck.expiresAt)) {
+                room.readyCheck = null
+                continue
+            }
+            readyCheck.responses.keys.removeIf { playerId -> playerId !in room.players }
+        }
     }
 
     private fun pruneDetachedDisconnectedPlayer(playerId: PlayerId) {
@@ -802,6 +924,23 @@ class RaceService(
         val current = currentMatchId
             ?.let(matchesById::get)
             ?.toView(players)
+        val ready = readyCheck?.let { ready ->
+            ReadyCheckView(
+                initiatedBy = ready.initiatedBy,
+                startedAtMs = ready.startedAt.toEpochMilli(),
+                expiresAtMs = ready.expiresAt.toEpochMilli(),
+                responses = ready.responses
+                    .entries
+                    .sortedBy { it.key }
+                    .map { (playerId, response) ->
+                        ReadyCheckResponseView(
+                            playerId = playerId,
+                            status = response.status,
+                            respondedAtMs = response.respondedAt.toEpochMilli(),
+                        )
+                    },
+            )
+        }
 
         return RoomView(
             code = code,
@@ -818,6 +957,7 @@ class RaceService(
             },
             pendingMatch = pending,
             currentMatch = current,
+            readyCheck = ready,
         )
     }
 
@@ -889,6 +1029,33 @@ class RaceService(
             }
             if (room.currentMatchId != null && room.pendingMatch != null) {
                 throw DomainException("INVARIANT_VIOLATION", "Room '$roomId' has both active and pending match")
+            }
+            if (room.currentMatchId != null && room.readyCheck != null) {
+                throw DomainException("INVARIANT_VIOLATION", "Room '$roomId' has both active match and ready check")
+            }
+
+            val readyCheck = room.readyCheck
+            if (readyCheck != null) {
+                if (!readyCheck.expiresAt.isAfter(readyCheck.startedAt)) {
+                    throw DomainException("INVARIANT_VIOLATION", "Room '$roomId' ready check expiration is invalid")
+                }
+                if (readyCheck.initiatedBy !in room.players) {
+                    throw DomainException("INVARIANT_VIOLATION", "Room '$roomId' ready check initiator is not in room")
+                }
+                for ((responsePlayerId, response) in readyCheck.responses) {
+                    if (responsePlayerId !in room.players) {
+                        throw DomainException(
+                            "INVARIANT_VIOLATION",
+                            "Room '$roomId' ready check has response from player outside room",
+                        )
+                    }
+                    if (response.respondedAt.isBefore(readyCheck.startedAt) || response.respondedAt.isAfter(readyCheck.expiresAt)) {
+                        throw DomainException(
+                            "INVARIANT_VIOLATION",
+                            "Room '$roomId' ready check response timestamp is out of bounds",
+                        )
+                    }
+                }
             }
 
             val currentMatchId = room.currentMatchId
@@ -992,5 +1159,6 @@ class RaceService(
 
     companion object {
         private const val ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        private const val READY_CHECK_TTL_MS = 10_000L
     }
 }

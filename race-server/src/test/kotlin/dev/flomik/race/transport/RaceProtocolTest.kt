@@ -58,6 +58,27 @@ class RaceProtocolTest {
     }
 
     @Test
+    fun parseReadyCheck() {
+        val parsed = ClientMessageParser.parse(
+            json,
+            """{"type":"ready_check"}""",
+        )
+
+        assertTrue(parsed is ClientMessage.ReadyCheck)
+    }
+
+    @Test
+    fun parseReadyCheckResponse() {
+        val parsed = ClientMessageParser.parse(
+            json,
+            """{"type":"ready_check_response","ready":true}""",
+        )
+
+        assertTrue(parsed is ClientMessage.ReadyCheckResponse)
+        assertEquals(true, parsed.ready)
+    }
+
+    @Test
     fun parseLeaveMatch() {
         val parsed = ClientMessageParser.parse(
             json,

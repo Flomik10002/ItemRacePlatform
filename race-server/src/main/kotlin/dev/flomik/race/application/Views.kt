@@ -4,6 +4,7 @@ import dev.flomik.race.domain.ConnectionState
 import dev.flomik.race.domain.LeaveReason
 import dev.flomik.race.domain.PlayerResult
 import dev.flomik.race.domain.PlayerStatus
+import dev.flomik.race.domain.ReadyCheckStatus
 
 data class RaceSnapshot(
     val serverTimeMs: Long,
@@ -25,6 +26,7 @@ data class RoomView(
     val players: List<RoomPlayerView>,
     val pendingMatch: PendingMatchView? = null,
     val currentMatch: MatchView? = null,
+    val readyCheck: ReadyCheckView? = null,
 )
 
 data class RoomPlayerView(
@@ -39,6 +41,19 @@ data class PendingMatchView(
     val targetItem: String,
     val seed: Long,
     val rolledAtMs: Long,
+)
+
+data class ReadyCheckView(
+    val initiatedBy: String,
+    val startedAtMs: Long,
+    val expiresAtMs: Long,
+    val responses: List<ReadyCheckResponseView>,
+)
+
+data class ReadyCheckResponseView(
+    val playerId: String,
+    val status: ReadyCheckStatus,
+    val respondedAtMs: Long,
 )
 
 data class MatchView(
@@ -60,4 +75,3 @@ data class MatchPlayerView(
     val leaveReason: LeaveReason? = null,
     val leftAtMs: Long? = null,
 )
-
