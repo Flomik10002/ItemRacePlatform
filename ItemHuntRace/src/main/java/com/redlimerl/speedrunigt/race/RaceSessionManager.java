@@ -364,6 +364,14 @@ public final class RaceSessionManager {
         resetToIdle();
     }
 
+    public void leaveMatch() {
+        if (state != RaceState.RUNNING && state != RaceState.STARTING) return;
+
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "leave_match");
+        send(msg);
+    }
+
     public void rollMatch() {
         if (state != RaceState.LOBBY && state != RaceState.FINISHED) return;
         if (!isLocalPlayerLeader()) return;

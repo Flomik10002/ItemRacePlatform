@@ -178,6 +178,10 @@ fun Application.configureSockets(
                                 raceService.leaveRoom(actor)
                             }
 
+                            is ClientMessage.LeaveMatch -> handleAction("leave_match") { actor ->
+                                raceService.leaveMatch(actor)
+                            }
+
                             is ClientMessage.RollMatch -> handleAction("roll_match") { actor ->
                                 raceService.rollMatch(actor)
                             }

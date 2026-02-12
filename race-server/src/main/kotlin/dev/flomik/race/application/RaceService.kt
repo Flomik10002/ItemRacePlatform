@@ -244,6 +244,28 @@ class RaceService(
         room.players.toSet()
     }
 
+    suspend fun leaveMatch(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val room = findRoomByPlayer(playerId)
+            ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
+        val match = activeMatch(room)
+            ?: throw DomainException("NO_ACTIVE_MATCH", "No active match in this room")
+        val state = match.players[playerId]
+            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
+
+        val now = now()
+        if (state.status == PlayerStatus.RUNNING) {
+            state.leave(LeaveReason.MANUAL, now)
+            match.updatedAt = now
+        }
+
+        completeMatchIfNeeded(room, match, now)
+
+        validateGlobalState()
+        persistStateLocked()
+        room.players.toSet().plus(playerId)
+    }
+
     suspend fun leaveRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
         val room = findRoomByPlayer(playerId)

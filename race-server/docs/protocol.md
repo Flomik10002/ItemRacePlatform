@@ -25,6 +25,7 @@ Server responds:
 - `create_room`
 - `join_room` (`roomCode`)
 - `leave_room`
+- `leave_match` (set `LEAVE` in active match, keep room membership)
 - `roll_match`
 - `start_match`
 - `cancel_start` (leader only; cancel pre-start countdown, keep room)

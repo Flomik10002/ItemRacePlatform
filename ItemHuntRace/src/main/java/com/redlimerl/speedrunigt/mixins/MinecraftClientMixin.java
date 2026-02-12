@@ -253,7 +253,7 @@ public abstract class MinecraftClientMixin {
 
     @Unique
     private void leaveMatchAndDisconnectWorld(MinecraftClient client) {
-        RaceSessionManager.getInstance().leaveRoom();
+        RaceSessionManager.getInstance().leaveMatch();
         disconnectWorldOnly(client);
     }
 }
