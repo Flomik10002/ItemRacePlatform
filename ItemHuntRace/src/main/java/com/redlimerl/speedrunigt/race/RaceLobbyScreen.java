@@ -44,6 +44,7 @@ public class RaceLobbyScreen extends Screen {
 	    private TextFieldWidget roomCodeField;
 	    private TextFieldWidget serverUriField;
 
+		    private ButtonWidget rollButton;
 		    private ButtonWidget startButton;
 		    private long codeCopiedUntil = 0;
         private long lastHealthCheckAt = 0L;
@@ -60,6 +61,7 @@ public class RaceLobbyScreen extends Screen {
 		    @Override
 			    protected void init() {
 		        this.clearChildren();
+		        this.rollButton = null;
 		        this.startButton = null;
 
 		        RaceSessionManager race = RaceSessionManager.getInstance();
@@ -128,9 +130,13 @@ public class RaceLobbyScreen extends Screen {
 		            int buttonWidth = Math.min(240, mainPanelWidth - 60);
 		            int buttonX = mainPanelX + (mainPanelWidth - buttonWidth) / 2;
 
+			            this.rollButton = this.addDrawableChild(ButtonWidgetHelper.create(buttonX, mainPanelY + mainPanelHeight - 84, buttonWidth, 20, Text.translatable("speedrunigt.race.roll_item"), button -> {
+				            RaceSessionManager.getInstance().rollMatch();
+			            }));
+
 			            this.startButton = this.addDrawableChild(ButtonWidgetHelper.create(buttonX, mainPanelY + mainPanelHeight - 58, buttonWidth, 20, Text.translatable("speedrunigt.race.start"), button -> {
 				            RaceSessionManager current = RaceSessionManager.getInstance();
-				            if (current.getState() == RaceState.STARTING || current.getState() == RaceState.RUNNING) {
+				            if (current.getState() == RaceState.STARTING) {
 					            current.cancelStart();
 				            } else {
 					            current.requestStart();
@@ -161,30 +167,41 @@ public class RaceLobbyScreen extends Screen {
     }
 
     private void updateStartButton() {
-        if (startButton == null) return;
         RaceSessionManager race = RaceSessionManager.getInstance();
         boolean inWorld = this.client != null && this.client.world != null;
         boolean leader = race.isLocalPlayerLeader();
+        boolean hasPending = race.hasPendingMatch();
+        boolean isLobbyOrFinished = race.getState() == RaceState.LOBBY || race.getState() == RaceState.FINISHED;
 
-        if (race.getState() == RaceState.STARTING || race.getState() == RaceState.RUNNING) {
-            startButton.active = true;
-            startButton.setMessage(Text.translatable("speedrunigt.race.stop"));
+        if (rollButton != null) {
+            rollButton.active = leader && isLobbyOrFinished;
+            rollButton.visible = isLobbyOrFinished;
+        }
+
+        if (startButton == null) return;
+
+        if (race.getState() == RaceState.STARTING) {
+            startButton.active = leader;
+            startButton.setMessage(leader
+                    ? Text.translatable("speedrunigt.race.stop")
+                    : Text.translatable("speedrunigt.race.start_leader_only"));
+            return;
+        }
+        if (race.getState() == RaceState.RUNNING) {
+            startButton.active = false;
+            startButton.setMessage(Text.translatable("speedrunigt.race.start"));
             return;
         }
 
-        boolean startInFlight = race.isStartRequestInFlight();
-        boolean canStart = !inWorld &&
-                (race.getState() == RaceState.LOBBY || race.getState() == RaceState.FINISHED) &&
-                leader &&
-                !startInFlight;
+        boolean canStart = !inWorld && isLobbyOrFinished && leader && hasPending;
 
         startButton.active = canStart;
         if (inWorld) {
             startButton.setMessage(Text.translatable("speedrunigt.race.start_leave_world"));
-        } else if (startInFlight) {
-            startButton.setMessage(Text.translatable("speedrunigt.race.starting"));
         } else if (!leader) {
             startButton.setMessage(Text.translatable("speedrunigt.race.start_leader_only"));
+        } else if (!hasPending) {
+            startButton.setMessage(Text.translatable("speedrunigt.race.start_waiting_roll"));
         } else {
             startButton.setMessage(Text.translatable("speedrunigt.race.start"));
         }

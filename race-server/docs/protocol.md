@@ -27,6 +27,7 @@ Server responds:
 - `leave_room`
 - `roll_match`
 - `start_match`
+- `cancel_start` (leader only; cancel pre-start countdown, keep room)
 - `finish` (`rttMs`, `igtMs`)
 - `death`
 

@@ -262,9 +262,6 @@ class RaceService(
         if (activeMatch(room) != null) {
             throw DomainException("MATCH_ALREADY_ACTIVE", "Current match is still active")
         }
-        if (room.pendingMatch != null) {
-            throw DomainException("PENDING_MATCH_EXISTS", "Pending match already exists")
-        }
 
         val now = now()
         val revision = room.revisionCounter + 1
@@ -317,6 +314,38 @@ class RaceService(
         room.currentMatchId = match.id
         room.pendingMatch = null
         room.pendingRemovals.clear()
+
+        validateGlobalState()
+        persistStateLocked()
+        room.players.toSet()
+    }
+
+    suspend fun cancelStart(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val room = findRoomByPlayer(playerId)
+            ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
+
+        ensureLeader(room, playerId)
+        val match = activeMatch(room)
+            ?: throw DomainException("NO_ACTIVE_MATCH", "No active match in this room")
+
+        if (match.players.values.any { it.status != PlayerStatus.RUNNING }) {
+            throw DomainException(
+                "MATCH_ALREADY_PROGRESSING",
+                "Cannot cancel start after match progress",
+            )
+        }
+
+        val now = now()
+        match.complete(now)
+        room.currentMatchId = null
+        room.pendingRemovals.clear()
+        room.pendingMatch = PendingMatchConfig(
+            targetItem = match.targetItem,
+            seed = match.seed,
+            rolledAt = now,
+            revision = match.revision,
+        )
 
         validateGlobalState()
         persistStateLocked()

@@ -25,6 +25,7 @@ object RaceMessageTypes {
     const val LEAVE_ROOM = "leave_room"
     const val ROLL_MATCH = "roll_match"
     const val START_MATCH = "start_match"
+    const val CANCEL_START = "cancel_start"
     const val FINISH = "finish"
     const val DEATH = "death"
     const val SYNC_STATE = "sync_state"
@@ -49,6 +50,7 @@ sealed interface ClientMessage {
     data object LeaveRoom : ClientMessage
     data object RollMatch : ClientMessage
     data object StartMatch : ClientMessage
+    data object CancelStart : ClientMessage
     data class Finish(val rttMs: Long, val igtMs: Long) : ClientMessage
     data object Death : ClientMessage
     data object SyncState : ClientMessage
@@ -77,6 +79,7 @@ object ClientMessageParser {
             RaceMessageTypes.LEAVE_ROOM -> ClientMessage.LeaveRoom
             RaceMessageTypes.ROLL_MATCH -> ClientMessage.RollMatch
             RaceMessageTypes.START_MATCH -> ClientMessage.StartMatch
+            RaceMessageTypes.CANCEL_START -> ClientMessage.CancelStart
             RaceMessageTypes.FINISH -> ClientMessage.Finish(
                 rttMs = root.requiredLong("rttMs"),
                 igtMs = root.requiredLong("igtMs"),

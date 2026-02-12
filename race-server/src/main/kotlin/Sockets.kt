@@ -184,6 +184,10 @@ fun Application.configureSockets(
                                 raceService.startMatch(actor)
                             }
 
+                            is ClientMessage.CancelStart -> handleAction("cancel_start") { actor ->
+                                raceService.cancelStart(actor)
+                            }
+
                             is ClientMessage.Finish -> handleAction("finish") { actor ->
                                 raceService.finish(
                                     playerId = actor,

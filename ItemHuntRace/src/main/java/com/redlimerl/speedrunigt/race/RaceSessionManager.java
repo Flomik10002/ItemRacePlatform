@@ -73,7 +73,7 @@ public final class RaceSessionManager {
 
     public static final String SERVER_URI_PROPERTY = "speedrunigt.race.server";
     private static final String DEFAULT_SERVER_URI = "ws://race.flomik.xyz:8080/race";
-    private static final long LOCAL_START_COUNTDOWN_MS = 3_000L;
+    private static final long LOCAL_START_COUNTDOWN_MS = 10_000L;
 
     private static final RaceSessionManager INSTANCE = new RaceSessionManager();
 
@@ -108,6 +108,7 @@ public final class RaceSessionManager {
     private final ConcurrentHashMap<String, String> playerNameById = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, FinishTime> finishTimesByPlayerId = new ConcurrentHashMap<>();
 
+    private boolean hasPendingMatch = false;
     private String activeMatchId = null;
     private String seedString = null;
     private Identifier targetItemId = null;
@@ -115,8 +116,6 @@ public final class RaceSessionManager {
     private long startScheduledAt = 0L;
     private boolean worldCreationRequested = false;
     private boolean timerConfigured = false;
-    private boolean startRequested = false;
-    private long startRequestSentAt = 0L;
 
     private String pendingWorldDirectoryName = null;
     private String activeRaceWorldName = null;
@@ -150,6 +149,10 @@ public final class RaceSessionManager {
         return List.copyOf(players);
     }
 
+    public boolean hasPendingMatch() {
+        return hasPendingMatch;
+    }
+
     public Optional<Identifier> getTargetItemId() {
         return Optional.ofNullable(targetItemId);
     }
@@ -166,7 +169,7 @@ public final class RaceSessionManager {
     }
 
     public boolean shouldRenderTargetHud() {
-        return state == RaceState.RUNNING && targetItemId != null;
+        return (state == RaceState.RUNNING || state == RaceState.STARTING) && targetItemId != null;
     }
 
     public boolean isLocalPlayerLeader() {
@@ -175,10 +178,6 @@ public final class RaceSessionManager {
         }
         if (players.isEmpty()) return true;
         return players.get(0).id().toString().equals(getClientPlayerId());
-    }
-
-    public boolean isStartRequestInFlight() {
-        return startRequested && (System.currentTimeMillis() - startRequestSentAt) < 3_000L;
     }
 
     public URI getServerUri() {
@@ -365,6 +364,14 @@ public final class RaceSessionManager {
         resetToIdle();
     }
 
+    public void rollMatch() {
+        if (state != RaceState.LOBBY && state != RaceState.FINISHED) return;
+        if (!isLocalPlayerLeader()) return;
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "roll_match");
+        send(msg);
+    }
+
     public void requestStart() {
         if (state != RaceState.LOBBY && state != RaceState.FINISHED) {
             lastError = "Cannot start: state=" + state;
@@ -378,15 +385,12 @@ public final class RaceSessionManager {
             lastError = "Leave world before start";
             return;
         }
-        if (isStartRequestInFlight()) return;
+        if (!hasPendingMatch) {
+            lastError = "Roll an item first";
+            return;
+        }
 
-        startRequested = true;
-        startRequestSentAt = System.currentTimeMillis();
         lastError = null;
-
-        JsonObject roll = new JsonObject();
-        roll.addProperty("type", "roll_match");
-        send(roll);
 
         JsonObject start = new JsonObject();
         start.addProperty("type", "start_match");
@@ -394,8 +398,20 @@ public final class RaceSessionManager {
     }
 
     public void cancelStart() {
-        if (state != RaceState.STARTING && state != RaceState.RUNNING) return;
-        leaveRoom();
+        if (state != RaceState.STARTING) return;
+
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "cancel_start");
+        send(msg);
+
+        // Optimistic local reset; authoritative state comes from next snapshot.
+        state = RaceState.LOBBY;
+        hasPendingMatch = true;
+        activeMatchId = null;
+        startScheduledAt = 0L;
+        worldCreationRequested = false;
+        finishTriggered.set(false);
+        lastError = null;
     }
 
     public void sendAdvancementAchieved(Identifier id) {
@@ -430,6 +446,8 @@ public final class RaceSessionManager {
             JsonObject msg = new JsonObject();
             msg.addProperty("type", "death");
             send(msg);
+
+            sendSystemChat("\u00a7cYou died! Race over.");
         } else {
             finishTimesByPlayerId.put(selfId,
                     new FinishTime(selfId, selfName, timer.getInGameTime(false), timer.getRealTimeAttack(), false));
@@ -439,6 +457,9 @@ public final class RaceSessionManager {
             msg.addProperty("rttMs", timer.getRealTimeAttack());
             msg.addProperty("igtMs", timer.getInGameTime(false));
             send(msg);
+
+            String rta = InGameTimerUtils.timeToStringFormat(timer.getRealTimeAttack());
+            sendSystemChat("\u00a7aYou found the target item! Time: " + rta);
         }
     }
 
@@ -470,6 +491,7 @@ public final class RaceSessionManager {
         playerNameById.clear();
         finishTimesByPlayerId.clear();
 
+        hasPendingMatch = false;
         activeMatchId = null;
         seedString = null;
         targetItemId = null;
@@ -477,8 +499,6 @@ public final class RaceSessionManager {
         pendingWorldDirectoryName = null;
         activeRaceWorldName = null;
 
-        startRequested = false;
-        startRequestSentAt = 0L;
         startScheduledAt = 0L;
         worldCreationRequested = false;
         timerConfigured = false;
@@ -596,12 +616,7 @@ public final class RaceSessionManager {
             }
             case "pong" -> healthStatus = HealthStatus.ONLINE;
             case "ack" -> {
-                String action = getString(msg, "action");
-                if ("start_match".equals(action) || "roll_match".equals(action)) {
-                    // State message is source-of-truth; this only clears UI "starting" spinner if needed.
-                    startRequested = false;
-                    startRequestSentAt = 0L;
-                }
+                // State message is source-of-truth; ack is informational only.
             }
             case "error" -> {
                 String code = getString(msg, "code");
@@ -622,10 +637,6 @@ public final class RaceSessionManager {
                 }
                 if ("PLAYER_NOT_IN_ROOM".equals(code) || "ROOM_NOT_FOUND".equals(code)) {
                     resetToIdle();
-                }
-                if (startRequested) {
-                    startRequested = false;
-                    startRequestSentAt = 0L;
                 }
             }
             case "state" -> {
@@ -670,13 +681,28 @@ public final class RaceSessionManager {
 
         parseRoomPlayers(room);
 
+        JsonObject pendingMatchObj = room.has("pendingMatch") && room.get("pendingMatch").isJsonObject()
+                ? room.getAsJsonObject("pendingMatch") : null;
+        hasPendingMatch = pendingMatchObj != null;
+        if (pendingMatchObj != null) {
+            String target = getString(pendingMatchObj, "targetItem");
+            if (target != null) {
+                Identifier parsed = Identifier.tryParse(target);
+                if (parsed != null && Registries.ITEM.containsId(parsed)) targetItemId = parsed;
+            }
+            Long seed = getLong(pendingMatchObj, "seed");
+            if (seed != null) seedString = Long.toString(seed);
+        }
+
         JsonObject currentMatch = room.has("currentMatch") && room.get("currentMatch").isJsonObject()
                 ? room.getAsJsonObject("currentMatch")
                 : null;
 
         if (currentMatch == null || !getBoolean(currentMatch, "isActive", false)) {
-            seedString = null;
-            targetItemId = null;
+            if (!hasPendingMatch) {
+                seedString = null;
+                targetItemId = null;
+            }
             activeMatchId = null;
             startScheduledAt = 0L;
             worldCreationRequested = false;
@@ -730,8 +756,6 @@ public final class RaceSessionManager {
             finishTriggered.set(false);
             timerConfigured = false;
             worldCreationRequested = false;
-            startRequested = false;
-            startRequestSentAt = 0L;
             startScheduledAt = System.currentTimeMillis() + LOCAL_START_COUNTDOWN_MS;
             pendingWorldDirectoryName = null;
             activeRaceWorldName = null;
@@ -758,6 +782,9 @@ public final class RaceSessionManager {
 
         String selfId = getClientPlayerId();
         String selfStatus = null;
+        int terminalCount = 0;
+        int totalPlayers = 0;
+        FinishTime firstFinisher = null;
 
         for (JsonElement element : matchPlayers) {
             if (!element.isJsonObject()) continue;
@@ -767,7 +794,9 @@ public final class RaceSessionManager {
             String status = getString(player, "status");
             if (playerId == null || status == null) continue;
 
+            totalPlayers++;
             String playerName = playerNameById.getOrDefault(playerId, playerId);
+            boolean wasTracked = finishTimesByPlayerId.containsKey(playerId);
 
             if ("FINISHED".equals(status)) {
                 JsonObject result = player.has("result") && player.get("result").isJsonObject()
@@ -776,10 +805,24 @@ public final class RaceSessionManager {
                 long rttMs = result != null && getLong(result, "rttMs") != null ? Objects.requireNonNull(getLong(result, "rttMs")) : 0L;
                 long igtMs = result != null && getLong(result, "igtMs") != null ? Objects.requireNonNull(getLong(result, "igtMs")) : 0L;
 
-                finishTimesByPlayerId.put(playerId, new FinishTime(playerId, playerName, igtMs, rttMs, false));
+                FinishTime ft = new FinishTime(playerId, playerName, igtMs, rttMs, false);
+                finishTimesByPlayerId.put(playerId, ft);
+                terminalCount++;
+
+                if (firstFinisher == null || rttMs < firstFinisher.rtaMs) firstFinisher = ft;
+
+                if (!wasTracked && !selfId.equals(playerId)) {
+                    String time = InGameTimerUtils.timeToStringFormat(rttMs);
+                    sendSystemChat("\u00a7e" + playerName + " found the item! (" + time + ")");
+                }
             } else if ("DEATH".equals(status) || "LEAVE".equals(status)) {
                 finishTimesByPlayerId.put(playerId,
                         new FinishTime(playerId, playerName, Long.MAX_VALUE, Long.MAX_VALUE, true));
+                terminalCount++;
+
+                if (!wasTracked && !selfId.equals(playerId)) {
+                    sendSystemChat("\u00a77" + playerName + " was eliminated");
+                }
             } else if ("RUNNING".equals(status)) {
                 finishTimesByPlayerId.remove(playerId);
             }
@@ -787,6 +830,10 @@ public final class RaceSessionManager {
             if (selfId.equals(playerId)) {
                 selfStatus = status;
             }
+        }
+
+        if (totalPlayers > 0 && terminalCount == totalPlayers && firstFinisher != null && !firstFinisher.eliminated) {
+            sendWinnerAnnouncement(firstFinisher.playerName, firstFinisher);
         }
 
         if (selfStatus == null) {

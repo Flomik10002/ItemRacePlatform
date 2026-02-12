@@ -48,6 +48,16 @@ class RaceProtocolTest {
     }
 
     @Test
+    fun parseCancelStart() {
+        val parsed = ClientMessageParser.parse(
+            json,
+            """{"type":"cancel_start"}""",
+        )
+
+        assertTrue(parsed is ClientMessage.CancelStart)
+    }
+
+    @Test
     fun missingTypeProducesError() {
         val error = assertFailsWith<ProtocolException> {
             ClientMessageParser.parse(json, """{"playerId":"p1"}""")

@@ -95,6 +95,12 @@ fun buildProtocolCatalog(): ProtocolCatalog {
                 fields = emptyList(),
             ),
             ProtocolMessageSpec(
+                type = RaceMessageTypes.CANCEL_START,
+                direction = "client_to_server",
+                description = "Leader-only: cancel pre-start countdown and return active match back to pending.",
+                fields = emptyList(),
+            ),
+            ProtocolMessageSpec(
                 type = RaceMessageTypes.FINISH,
                 direction = "client_to_server",
                 description = "Report successful run result.",

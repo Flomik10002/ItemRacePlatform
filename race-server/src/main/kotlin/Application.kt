@@ -23,6 +23,7 @@ fun Application.module() {
     val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
+        encodeDefaults = true
     }
 
     val persistenceEnabled = environment.config
