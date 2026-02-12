@@ -46,6 +46,7 @@ Default port: `8080`
 
 ```yaml
 race:
+  target-items-file: "" # optional path to external items.txt
   persistence:
     enabled: true
     provider: file # file | postgres
@@ -67,6 +68,25 @@ Compose provisions:
 
 - race-server container
 - postgres container with persistent volume
+- binds `./config/items.txt` into container and uses it as target item pool
+
+## Production deploy checklist
+
+1. Configure firewall/NAT for TCP `8080` (or change mapping in compose).
+2. Set strong Postgres credentials in `docker-compose.yml`.
+3. Edit `config/items.txt` with allowed race targets.
+4. Start stack:
+   ```bash
+   cd race-server
+   docker compose up -d --build
+   ```
+5. Smoke check:
+   - `curl http://127.0.0.1:8080/health`
+   - open `http://127.0.0.1:8080/docs`
+6. Watch logs:
+   ```bash
+   docker compose logs -f race-server
+   ```
 
 ## Memory policy
 

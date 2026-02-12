@@ -2,6 +2,7 @@ package dev.flomik
 
 import dev.flomik.race.application.KotlinRandomSource
 import dev.flomik.race.application.RaceService
+import dev.flomik.race.application.TargetItemCatalog
 import dev.flomik.race.application.UuidIdGenerator
 import dev.flomik.race.persistence.FileRaceStateStore
 import dev.flomik.race.persistence.PostgresRaceStateStore
@@ -38,6 +39,7 @@ fun Application.module() {
         configKey = "race.persistence.provider",
         envKey = "RACE_PERSISTENCE_PROVIDER",
     )?.lowercase() ?: "file"
+    val targetItems = loadTargetItems()
 
     val stateStore = if (!persistenceEnabled) {
         null
@@ -92,6 +94,7 @@ fun Application.module() {
         idGenerator = UuidIdGenerator(),
         randomSource = KotlinRandomSource(),
         stateStore = stateStore,
+        targetItems = targetItems,
     )
     runBlocking { raceService.warmup() }
 
@@ -105,4 +108,21 @@ private fun Application.readConfigOrEnv(configKey: String, envKey: String): Stri
     val envValue = System.getenv(envKey)?.takeIf { it.isNotBlank() }
     if (envValue != null) return envValue
     return environment.config.propertyOrNull(configKey)?.getString()
+}
+
+private fun Application.loadTargetItems(): List<String> {
+    val externalPath = readConfigOrEnv(
+        configKey = "race.target-items-file",
+        envKey = "RACE_TARGET_ITEMS_FILE",
+    )?.trim()?.takeIf { it.isNotEmpty() }
+
+    return if (externalPath != null) {
+        val items = TargetItemCatalog.loadFromFile(Paths.get(externalPath))
+        environment.log.info("Loaded {} target items from {}", items.size, externalPath)
+        items
+    } else {
+        val items = TargetItemCatalog.loadFromClasspath()
+        environment.log.info("Loaded {} target items from classpath resource items.txt", items.size)
+        items
+    }
 }

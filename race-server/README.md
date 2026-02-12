@@ -76,6 +76,12 @@ Environment variables (override config):
 - `RACE_DB_USER`
 - `RACE_DB_PASSWORD`
 - `RACE_RECONNECT_GRACE_MS`
+- `RACE_TARGET_ITEMS_FILE`
+
+Target items are loaded from:
+
+- external file (`RACE_TARGET_ITEMS_FILE` / `race.target-items-file`) when set
+- otherwise from classpath `src/main/resources/items.txt`
 
 ## Docker deployment
 
@@ -90,3 +96,22 @@ This starts:
 - `postgres` with persisted volume
 
 Default compose configuration uses postgres persistence.
+
+## Deploy on host (Docker + Postgres)
+
+1. Copy repository to host and install Docker Engine + Docker Compose plugin.
+2. Edit target item pool in `race-server/config/items.txt`.
+3. (Optional) Change DB credentials and ports in `race-server/docker-compose.yml`.
+4. Start:
+   ```bash
+   cd race-server
+   docker compose up -d --build
+   ```
+5. Check status/logs:
+   ```bash
+   docker compose ps
+   docker compose logs -f race-server
+   ```
+6. Verify:
+   - `http://<host>:8080/health`
+   - `http://<host>:8080/docs`

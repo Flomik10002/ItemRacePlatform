@@ -32,6 +32,7 @@ Ktor glue lives in:
 
 1. Boot
    - read config
+   - load target item catalog from `items.txt` (external file if configured)
    - construct `RaceService`
    - `warmup()` loads persisted state (if enabled)
 2. WebSocket auth

@@ -55,6 +55,7 @@ class RaceService(
     private val idGenerator: IdGenerator = UuidIdGenerator(),
     private val randomSource: RandomSource = KotlinRandomSource(),
     private val stateStore: RaceStateStore? = null,
+    targetItems: List<String> = TargetItemCatalog.loadFromClasspath(),
 ) {
     private val mutex = Mutex()
     private var hydratedFromStore: Boolean = false
@@ -65,6 +66,15 @@ class RaceService(
     private val playersById = mutableMapOf<PlayerId, PlayerProfile>()
     private val sessionsByPlayerId = mutableMapOf<PlayerId, PlayerSession>()
     private val playerRoomId = mutableMapOf<PlayerId, RoomId>()
+    private val targetItemPool = targetItems
+        .asSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .distinct()
+        .toList()
+        .also {
+            require(it.isNotEmpty()) { "targetItems must not be empty" }
+        }
 
     suspend fun warmup() = mutex.withLock {
         hydrateFromStoreIfNeeded()
@@ -844,7 +854,7 @@ class RaceService(
 
     private fun pickTargetItem(seed: Long): String {
         val seeded = Random(seed)
-        return TARGET_ITEMS[seeded.nextInt(TARGET_ITEMS.size)]
+        return targetItemPool[seeded.nextInt(targetItemPool.size)]
     }
 
     private fun validateGlobalState() {
@@ -960,38 +970,5 @@ class RaceService(
 
     companion object {
         private const val ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-
-        private val TARGET_ITEMS = listOf(
-            "minecraft:diamond",
-            "minecraft:emerald",
-            "minecraft:ender_pearl",
-            "minecraft:blaze_rod",
-            "minecraft:nether_wart",
-            "minecraft:quartz",
-            "minecraft:obsidian",
-            "minecraft:golden_apple",
-            "minecraft:gold_ingot",
-            "minecraft:iron_ingot",
-            "minecraft:lapis_lazuli",
-            "minecraft:redstone",
-            "minecraft:amethyst_shard",
-            "minecraft:glow_berries",
-            "minecraft:slime_ball",
-            "minecraft:gunpowder",
-            "minecraft:string",
-            "minecraft:spider_eye",
-            "minecraft:ghast_tear",
-            "minecraft:phantom_membrane",
-            "minecraft:prismarine_shard",
-            "minecraft:nautilus_shell",
-            "minecraft:heart_of_the_sea",
-            "minecraft:ancient_debris",
-            "minecraft:netherite_scrap",
-            "minecraft:copper_ingot",
-            "minecraft:goat_horn",
-            "minecraft:honey_bottle",
-            "minecraft:music_disc_13",
-            "minecraft:totem_of_undying",
-        )
     }
 }
