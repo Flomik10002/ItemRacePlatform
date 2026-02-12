@@ -42,6 +42,13 @@ data class ConnectResult(
     val affectedPlayerIds: Set<PlayerId>,
 )
 
+data class AdvancementBroadcast(
+    val playerId: PlayerId,
+    val playerName: String,
+    val advancementId: String,
+    val recipientPlayerIds: Set<PlayerId>,
+)
+
 class RaceService(
     private val reconnectGraceMs: Long = 45_000L,
     private val clock: Clock = SystemClock,
@@ -142,7 +149,14 @@ class RaceService(
         val disconnectedForMs = Duration.between(disconnectedAt, now).toMillis()
         if (disconnectedForMs < reconnectGraceMs) return@withLock emptySet()
 
-        val room = findRoomByPlayer(playerId) ?: return@withLock emptySet()
+        val room = findRoomByPlayer(playerId)
+        if (room == null) {
+            sessionsByPlayerId.remove(playerId)
+            playersById.remove(playerId)
+            validateGlobalState()
+            persistStateLocked()
+            return@withLock emptySet()
+        }
         val affected = room.players.toMutableSet().apply { add(playerId) }
 
         val match = activeMatch(room)
@@ -346,6 +360,7 @@ class RaceService(
             rolledAt = now,
             revision = match.revision,
         )
+        matchesById.remove(match.id)
 
         validateGlobalState()
         persistStateLocked()
@@ -392,6 +407,40 @@ class RaceService(
         validateGlobalState()
         persistStateLocked()
         room.players.toSet().plus(playerId)
+    }
+
+    suspend fun reportAdvancement(
+        playerId: PlayerId,
+        advancementIdRaw: String,
+    ): AdvancementBroadcast = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val advancementId = advancementIdRaw.trim()
+        if (advancementId.isBlank()) {
+            throw DomainException("INVALID_ADVANCEMENT", "advancement id must be non-empty")
+        }
+        if (advancementId.length > 256) {
+            throw DomainException("INVALID_ADVANCEMENT", "advancement id is too long")
+        }
+
+        val room = findRoomByPlayer(playerId)
+            ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
+        val match = activeMatch(room)
+            ?: throw DomainException("NO_ACTIVE_MATCH", "No active match in this room")
+        val state = match.players[playerId]
+            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
+        if (state.status != PlayerStatus.RUNNING) {
+            throw DomainException("PLAYER_NOT_RUNNING", "Only running player can report advancement")
+        }
+
+        val profile = playersById[playerId]
+            ?: throw DomainException("INVARIANT_VIOLATION", "Player profile missing for '$playerId'")
+
+        AdvancementBroadcast(
+            playerId = playerId,
+            playerName = profile.name,
+            advancementId = advancementId,
+            recipientPlayerIds = room.players.toSet(),
+        )
     }
 
     suspend fun snapshotFor(playerId: PlayerId): RaceSnapshot = mutex.withLock {
@@ -641,10 +690,12 @@ class RaceService(
 
         if (room.players.isEmpty()) {
             deleteRoom(room)
+            pruneDetachedDisconnectedPlayer(playerId)
             return
         }
 
         ensureLeader(room)
+        pruneDetachedDisconnectedPlayer(playerId)
     }
 
     private fun deleteRoom(room: Room) {
@@ -666,6 +717,7 @@ class RaceService(
         match.complete(now)
         room.currentMatchId = null
         applyPendingRemovals(room)
+        matchesById.remove(match.id)
     }
 
     private fun applyPendingRemovals(room: Room) {
@@ -674,6 +726,14 @@ class RaceService(
         val removals = room.pendingRemovals.toList()
         room.pendingRemovals.clear()
         removals.forEach { removePlayerFromRoom(room, it) }
+    }
+
+    private fun pruneDetachedDisconnectedPlayer(playerId: PlayerId) {
+        if (playerRoomId.containsKey(playerId)) return
+        val session = sessionsByPlayerId[playerId] ?: return
+        if (session.connectionState != ConnectionState.DISCONNECTED) return
+        sessionsByPlayerId.remove(playerId)
+        playersById.remove(playerId)
     }
 
     private fun findRoomByPlayer(playerId: PlayerId): Room? {

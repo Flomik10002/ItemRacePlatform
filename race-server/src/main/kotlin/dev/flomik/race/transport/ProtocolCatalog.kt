@@ -115,6 +115,14 @@ fun buildProtocolCatalog(): ProtocolCatalog {
                 description = "Report death while RUNNING.",
                 fields = emptyList(),
             ),
+            ProtocolMessageSpec(
+                type = RaceMessageTypes.ADVANCEMENT,
+                direction = "client_to_server",
+                description = "Report completed advancement for room broadcast notifications.",
+                fields = listOf(
+                    ProtocolFieldSpec("id", "string", true, "Advancement identifier."),
+                ),
+            ),
         ),
         serverMessages = listOf(
             ProtocolMessageSpec(
@@ -161,6 +169,16 @@ fun buildProtocolCatalog(): ProtocolCatalog {
                 description = "Ping response.",
                 fields = listOf(
                     ProtocolFieldSpec("serverTimeMs", "int64", true, "Current server timestamp."),
+                ),
+            ),
+            ProtocolMessageSpec(
+                type = RaceMessageTypes.ADVANCEMENT,
+                direction = "server_to_client",
+                description = "Advancement notification from another room participant.",
+                fields = listOf(
+                    ProtocolFieldSpec("playerId", "string", true, "Player id who completed advancement."),
+                    ProtocolFieldSpec("playerName", "string", true, "Player display name."),
+                    ProtocolFieldSpec("advancementId", "string", true, "Completed advancement identifier."),
                 ),
             ),
         ),

@@ -8,4 +8,9 @@ race:
     reconnect-grace-ms: 45000
     persistence:
         enabled: true
+        provider: file
         file: ./race-server-data/state.json
+        postgres:
+            url: jdbc:postgresql://localhost:5432/itemrace
+            user: itemrace
+            password: itemrace

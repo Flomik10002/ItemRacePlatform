@@ -28,6 +28,7 @@ object RaceMessageTypes {
     const val CANCEL_START = "cancel_start"
     const val FINISH = "finish"
     const val DEATH = "death"
+    const val ADVANCEMENT = "advancement"
     const val SYNC_STATE = "sync_state"
 
     const val WELCOME = "welcome"
@@ -53,6 +54,7 @@ sealed interface ClientMessage {
     data object CancelStart : ClientMessage
     data class Finish(val rttMs: Long, val igtMs: Long) : ClientMessage
     data object Death : ClientMessage
+    data class Advancement(val id: String) : ClientMessage
     data object SyncState : ClientMessage
 }
 
@@ -86,6 +88,9 @@ object ClientMessageParser {
             )
 
             RaceMessageTypes.DEATH -> ClientMessage.Death
+            RaceMessageTypes.ADVANCEMENT -> ClientMessage.Advancement(
+                id = root.requiredString("id"),
+            )
             RaceMessageTypes.SYNC_STATE -> ClientMessage.SyncState
             else -> throw ProtocolException("Unknown message type")
         }
@@ -147,6 +152,14 @@ data class PongMessage(
 data class StateMessage(
     val type: String = RaceMessageTypes.STATE,
     val snapshot: SnapshotDto,
+) : ServerMessage
+
+@Serializable
+data class AdvancementMessage(
+    val type: String = RaceMessageTypes.ADVANCEMENT,
+    val playerId: String,
+    val playerName: String,
+    val advancementId: String,
 ) : ServerMessage
 
 @Serializable

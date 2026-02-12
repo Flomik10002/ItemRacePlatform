@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: itemrace
+      POSTGRES_USER: itemrace
+      POSTGRES_PASSWORD: itemrace
+    volumes:
+      - race-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U itemrace -d itemrace"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  race-server:
+    build:
+      context: ..
+      dockerfile: race-server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      RACE_RECONNECT_GRACE_MS: "45000"
+      RACE_PERSISTENCE_ENABLED: "true"
+      RACE_PERSISTENCE_PROVIDER: "postgres"
+      RACE_DB_URL: "jdbc:postgresql://postgres:5432/itemrace"
+      RACE_DB_USER: "itemrace"
+      RACE_DB_PASSWORD: "itemrace"
+      JAVA_OPTS: "-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=20 -XX:MaxMetaspaceSize=192m"
+    restart: unless-stopped
+
+volumes:
+  race-postgres-data:
+

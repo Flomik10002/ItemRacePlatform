@@ -30,6 +30,7 @@ Server responds:
 - `cancel_start` (leader only; cancel pre-start countdown, keep room)
 - `finish` (`rttMs`, `igtMs`)
 - `death`
+- `advancement` (`id`)
 
 ## Server -> Client Events
 
@@ -38,6 +39,7 @@ Server responds:
 - `state` (`snapshot`)
 - `error` (`code`, `message`)
 - `pong` (`serverTimeMs`)
+- `advancement` (`playerId`, `playerName`, `advancementId`)
 
 ## Authoritative State
 

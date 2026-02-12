@@ -4,6 +4,7 @@ import dev.flomik.race.application.KotlinRandomSource
 import dev.flomik.race.application.RaceService
 import dev.flomik.race.application.UuidIdGenerator
 import dev.flomik.race.persistence.FileRaceStateStore
+import dev.flomik.race.persistence.PostgresRaceStateStore
 import io.ktor.server.application.Application
 import java.nio.file.Paths
 import kotlinx.coroutines.runBlocking
@@ -14,10 +15,10 @@ fun main(args: Array<String>) {
 }
 
 fun Application.module() {
-    val reconnectGraceMs = environment.config
-        .propertyOrNull("race.reconnect-grace-ms")
-        ?.getString()
-        ?.toLongOrNull()
+    val reconnectGraceMs = readConfigOrEnv(
+        configKey = "race.reconnect-grace-ms",
+        envKey = "RACE_RECONNECT_GRACE_MS",
+    )?.toLongOrNull()
         ?: 45_000L
 
     val json = Json {
@@ -26,29 +27,64 @@ fun Application.module() {
         encodeDefaults = true
     }
 
-    val persistenceEnabled = environment.config
-        .propertyOrNull("race.persistence.enabled")
-        ?.getString()
+    val persistenceEnabled = readConfigOrEnv(
+        configKey = "race.persistence.enabled",
+        envKey = "RACE_PERSISTENCE_ENABLED",
+    )
         ?.toBooleanStrictOrNull()
         ?: true
 
-    val persistenceFilePath = environment.config
-        .propertyOrNull("race.persistence.file")
-        ?.getString()
-        ?.takeIf { it.isNotBlank() }
-        ?: Paths.get(
-            System.getProperty("java.io.tmpdir"),
-            "item-race",
-            "race-state.json",
-        ).toString()
+    val persistenceProvider = readConfigOrEnv(
+        configKey = "race.persistence.provider",
+        envKey = "RACE_PERSISTENCE_PROVIDER",
+    )?.lowercase() ?: "file"
 
-    val stateStore = if (persistenceEnabled) {
-        FileRaceStateStore(
-            filePath = Paths.get(persistenceFilePath),
-            json = json,
-        )
-    } else {
+    val stateStore = if (!persistenceEnabled) {
         null
+    } else when (persistenceProvider) {
+        "file" -> {
+            val persistenceFilePath = readConfigOrEnv(
+                configKey = "race.persistence.file",
+                envKey = "RACE_PERSISTENCE_FILE",
+            )?.takeIf { it.isNotBlank() } ?: Paths.get(
+                System.getProperty("java.io.tmpdir"),
+                "item-race",
+                "race-state.json",
+            ).toString()
+
+            FileRaceStateStore(
+                filePath = Paths.get(persistenceFilePath),
+                json = json,
+            )
+        }
+
+        "postgres" -> {
+            val jdbcUrl = readConfigOrEnv(
+                configKey = "race.persistence.postgres.url",
+                envKey = "RACE_DB_URL",
+            )?.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException(
+                    "Postgres persistence requires race.persistence.postgres.url or RACE_DB_URL",
+                )
+
+            val user = readConfigOrEnv(
+                configKey = "race.persistence.postgres.user",
+                envKey = "RACE_DB_USER",
+            )
+            val password = readConfigOrEnv(
+                configKey = "race.persistence.postgres.password",
+                envKey = "RACE_DB_PASSWORD",
+            )
+
+            PostgresRaceStateStore(
+                jdbcUrl = jdbcUrl,
+                user = user,
+                password = password,
+                json = json,
+            )
+        }
+
+        else -> throw IllegalStateException("Unknown persistence provider: $persistenceProvider")
     }
 
     val raceService = RaceService(
@@ -63,4 +99,10 @@ fun Application.module() {
     configureMonitoring()
     configureRouting()
     configureSockets(raceService, json, reconnectGraceMs)
+}
+
+private fun Application.readConfigOrEnv(configKey: String, envKey: String): String? {
+    val envValue = System.getenv(envKey)?.takeIf { it.isNotBlank() }
+    if (envValue != null) return envValue
+    return environment.config.propertyOrNull(configKey)?.getString()
 }

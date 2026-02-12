@@ -7,7 +7,8 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.util.math.ColorHelper;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 
 import java.util.List;
 
@@ -70,18 +71,17 @@ public class LeaderboardOverlay {
         int lineHeight = 10;
 
         for (LeaderboardEntry entry : leaderboard) {
-            String text = entry.name() + " " + entry.time();
-            int color = 0xFFCCCCCC; // Light gray
-            
-            // Check if self
-            if (race.getPlayers().stream()
-                    .anyMatch(p -> p.name().equalsIgnoreCase(entry.name()) && p.name().equalsIgnoreCase(client.getSession().getUsername()))) {
-                color = 0xFF55FF55; // Green
-            } else if (leaderboard.indexOf(entry) == 0) {
-                 color = 0xFFFFD700; // Gold
-            }
+            Text nick = Text.literal(entry.name()).formatted(Formatting.WHITE, Formatting.BOLD);
+            int nickColor = 0xFFFFFFFF;
+            context.drawTextWithShadow(client.textRenderer, nick, x, y, nickColor);
 
-            context.drawTextWithShadow(client.textRenderer, text, x, y, color);
+            int nickWidth = client.textRenderer.getWidth(nick);
+            int timeX = x + nickWidth + 6;
+            int timeColor = 0xFFCCCCCC;
+            if (leaderboard.indexOf(entry) == 0) {
+                timeColor = 0xFFFFD700;
+            }
+            context.drawTextWithShadow(client.textRenderer, entry.time(), timeX, y, timeColor);
             y += lineHeight;
         }
         

@@ -18,7 +18,7 @@ The codebase is split into explicit layers:
   - protocol catalog used to generate docs
 - `dev.flomik.race.persistence`
   - state store abstraction
-  - in-memory + file implementations
+  - in-memory + file + postgres implementations
 
 Ktor glue lives in:
 
@@ -41,6 +41,7 @@ Ktor glue lives in:
    - client sends command (`create_room`, `start_match`, `finish`, ...)
    - server responds `ack` or `error`
    - server pushes authoritative `state`
+   - non-state event broadcasts (`advancement`) are relayed to room participants
 4. Reconnect
    - disconnect marks session as `DISCONNECTED`
    - grace timeout runs
@@ -54,6 +55,7 @@ Persistence is snapshot-based.
 - Implementations:
   - `InMemoryRaceStateStore`
   - `FileRaceStateStore`
+  - `PostgresRaceStateStore`
 
 Saved model:
 
@@ -71,6 +73,8 @@ Sessions are runtime-only and re-established through websocket `hello`.
 - active match must point to room and include room players only
 - terminal player states cannot transition back to `RUNNING`
 - `LEAVE` requires `leaveReason` and `leftAt`
+- completed matches are pruned from memory once no longer active
+- disconnected players with no room are pruned after reconnect grace timeout
 
 ## Entry Points
 

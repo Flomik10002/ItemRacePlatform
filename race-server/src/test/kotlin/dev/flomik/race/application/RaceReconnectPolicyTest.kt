@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertFalse
 
 class RaceReconnectPolicyTest {
     private fun createService(clock: MutableClock): RaceService {
@@ -83,5 +84,20 @@ class RaceReconnectPolicyTest {
         val after = service.snapshotFor("p2").room
         assertNotNull(after)
         assertEquals(listOf("p2"), after.players.map { it.playerId })
+    }
+
+    @Test
+    fun disconnectedPlayerWithoutRoomIsPrunedAfterGraceTimeout() = runTest {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val service = createService(clock)
+
+        val firstConnect = service.connect("p1", "Alice", null)
+        service.disconnect("p1", firstConnect.sessionId)
+
+        clock.advanceMillis(46_000L)
+        service.handleReconnectTimeout("p1", firstConnect.sessionId)
+
+        val reconnect = service.connect("p1", "Alice", firstConnect.sessionId)
+        assertFalse(reconnect.resumed)
     }
 }

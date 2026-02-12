@@ -5,6 +5,7 @@ import dev.flomik.race.domain.DomainException
 import dev.flomik.race.domain.PlayerId
 import dev.flomik.race.domain.SessionId
 import dev.flomik.race.transport.AckMessage
+import dev.flomik.race.transport.AdvancementMessage
 import dev.flomik.race.transport.ClientMessage
 import dev.flomik.race.transport.ClientMessageParser
 import dev.flomik.race.transport.ErrorMessage
@@ -199,6 +200,28 @@ fun Application.configureSockets(
                             is ClientMessage.Death -> handleAction("death") { actor ->
                                 raceService.reportDeath(actor)
                             }
+
+                            is ClientMessage.Advancement -> {
+                                val actor = currentPlayerId
+                                if (actor == null) {
+                                    sendError("NOT_AUTHENTICATED", "Send 'hello' first")
+                                } else {
+                                    val event = raceService.reportAdvancement(actor, parsed.id)
+                                    for (targetPlayerId in event.recipientPlayerIds) {
+                                        val socket = socketsByPlayerId[targetPlayerId] ?: continue
+                                        runCatching {
+                                            socket.sendServerMessage(
+                                                json,
+                                                AdvancementMessage(
+                                                    playerId = event.playerId,
+                                                    playerName = event.playerName,
+                                                    advancementId = event.advancementId,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } catch (e: DomainException) {
                         sendError(e.code, e.message)
@@ -243,6 +266,7 @@ private suspend fun WebSocketServerSession.sendServerMessage(
         is ErrorMessage -> json.encodeToString(message)
         is PongMessage -> json.encodeToString(message)
         is StateMessage -> json.encodeToString(message)
+        is AdvancementMessage -> json.encodeToString(message)
     }
 
     send(Frame.Text(text))

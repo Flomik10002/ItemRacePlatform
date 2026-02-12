@@ -48,8 +48,32 @@ Default port: `8080`
 race:
   persistence:
     enabled: true
+    provider: file # file | postgres
     file: ./race-server-data/state.json
+    postgres:
+      url: jdbc:postgresql://localhost:5432/itemrace
+      user: itemrace
+      password: itemrace
 ```
+
+## Docker / host deploy
+
+```bash
+cd race-server
+docker compose up --build
+```
+
+Compose provisions:
+
+- race-server container
+- postgres container with persistent volume
+
+## Memory policy
+
+- Completed matches are pruned from in-memory registry after match completion or `cancel_start`.
+- Disconnected players with no room are pruned after reconnect grace timeout.
+- Recommended JVM options for low footprint:
+  - `-XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxRAMPercentage=70 -XX:MaxMetaspaceSize=192m`
 
 ## Troubleshooting
 

@@ -415,7 +415,13 @@ public final class RaceSessionManager {
     }
 
     public void sendAdvancementAchieved(Identifier id) {
-        // Server protocol intentionally does not consume advancement events.
+        if (id == null) return;
+        if (state != RaceState.RUNNING && state != RaceState.STARTING) return;
+
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "advancement");
+        msg.addProperty("id", id.toString());
+        send(msg);
     }
 
     public void finishRun(FinishReason reason) {
@@ -458,8 +464,9 @@ public final class RaceSessionManager {
             msg.addProperty("igtMs", timer.getInGameTime(false));
             send(msg);
 
+            String igt = InGameTimerUtils.timeToStringFormat(timer.getInGameTime(false));
             String rta = InGameTimerUtils.timeToStringFormat(timer.getRealTimeAttack());
-            sendSystemChat("\u00a7aYou found the target item! Time: " + rta);
+            sendSystemChat("\u00a7aYou found the target item! IGT: " + igt + " | RTA: " + rta);
         }
     }
 
@@ -470,6 +477,8 @@ public final class RaceSessionManager {
         sorted.sort((a, b) -> {
             if (a.eliminated && !b.eliminated) return 1;
             if (!a.eliminated && b.eliminated) return -1;
+            int byIgt = Long.compare(a.igtMs, b.igtMs);
+            if (byIgt != 0) return byIgt;
             return Long.compare(a.rtaMs, b.rtaMs);
         });
 
@@ -477,7 +486,8 @@ public final class RaceSessionManager {
         for (FinishTime t : sorted) {
             String time = t.eliminated
                     ? "§cLOSE"
-                    : InGameTimerUtils.timeToStringFormat(Math.max(0L, t.rtaMs));
+                    : "IGT " + InGameTimerUtils.timeToStringFormat(Math.max(0L, t.igtMs))
+                    + " | RTA " + InGameTimerUtils.timeToStringFormat(Math.max(0L, t.rtaMs));
             result.add(new LeaderboardEntry(t.playerName, time));
         }
         return result;
@@ -647,6 +657,16 @@ public final class RaceSessionManager {
                     applyStateSnapshot(snapshot);
                 }
             }
+            case "advancement" -> {
+                String playerName = getString(msg, "playerName");
+                String advancementId = getString(msg, "advancementId");
+                if (playerName != null && advancementId != null) {
+                    sendSystemChat(
+                            Text.translatable("speedrunigt.race.chat.advancement", playerName, advancementId)
+                                    .formatted(Formatting.GRAY)
+                    );
+                }
+            }
             default -> {
                 // ignore unknown message
             }
@@ -809,11 +829,16 @@ public final class RaceSessionManager {
                 finishTimesByPlayerId.put(playerId, ft);
                 terminalCount++;
 
-                if (firstFinisher == null || rttMs < firstFinisher.rtaMs) firstFinisher = ft;
+                if (firstFinisher == null
+                        || igtMs < firstFinisher.igtMs
+                        || (igtMs == firstFinisher.igtMs && rttMs < firstFinisher.rtaMs)) {
+                    firstFinisher = ft;
+                }
 
                 if (!wasTracked && !selfId.equals(playerId)) {
-                    String time = InGameTimerUtils.timeToStringFormat(rttMs);
-                    sendSystemChat("\u00a7e" + playerName + " found the item! (" + time + ")");
+                    String igt = InGameTimerUtils.timeToStringFormat(igtMs);
+                    String rta = InGameTimerUtils.timeToStringFormat(rttMs);
+                    sendSystemChat("\u00a7e" + playerName + " found the item! (IGT " + igt + " | RTA " + rta + ")");
                 }
             } else if ("DEATH".equals(status) || "LEAVE".equals(status)) {
                 finishTimesByPlayerId.put(playerId,
@@ -922,9 +947,13 @@ public final class RaceSessionManager {
     }
 
     private void sendSystemChat(String message) {
+        sendSystemChat(Text.literal(message));
+    }
+
+    private void sendSystemChat(Text message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.inGameHud != null) {
-            client.inGameHud.getChatHud().addMessage(Text.literal(message));
+            client.inGameHud.getChatHud().addMessage(message);
         }
     }
 

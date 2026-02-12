@@ -57,7 +57,36 @@ Configured in `src/main/resources/application.yaml`:
 race:
   persistence:
     enabled: true
+    provider: file # file | postgres
     file: ./race-server-data/state.json
+    postgres:
+      url: jdbc:postgresql://localhost:5432/itemrace
+      user: itemrace
+      password: itemrace
 ```
 
-When enabled, server snapshots state to file and restores on boot.
+When enabled, server snapshots state and restores on boot.
+
+Environment variables (override config):
+
+- `RACE_PERSISTENCE_ENABLED`
+- `RACE_PERSISTENCE_PROVIDER`
+- `RACE_PERSISTENCE_FILE`
+- `RACE_DB_URL`
+- `RACE_DB_USER`
+- `RACE_DB_PASSWORD`
+- `RACE_RECONNECT_GRACE_MS`
+
+## Docker deployment
+
+```bash
+cd race-server
+docker compose up --build
+```
+
+This starts:
+
+- `race-server` on `:8080`
+- `postgres` with persisted volume
+
+Default compose configuration uses postgres persistence.

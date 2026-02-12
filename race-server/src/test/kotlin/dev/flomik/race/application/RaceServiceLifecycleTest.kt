@@ -172,4 +172,41 @@ class RaceServiceLifecycleTest {
         }
         assertEquals("NOT_ROOM_LEADER", error.code)
     }
+
+    @Test
+    fun runningPlayerCanReportAdvancement() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        val event = service.reportAdvancement("p1", "minecraft:story/mine_stone")
+        assertEquals("p1", event.playerId)
+        assertEquals("Alice", event.playerName)
+        assertEquals("minecraft:story/mine_stone", event.advancementId)
+        assertEquals(setOf("p1", "p2"), event.recipientPlayerIds)
+    }
+
+    @Test
+    fun finishedPlayerCannotReportAdvancement() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.createRoom("p1")
+        service.rollMatch("p1")
+        service.startMatch("p1")
+        service.finish("p1", rttMs = 1000, igtMs = 900)
+
+        val error = assertFailsWith<DomainException> {
+            service.reportAdvancement("p1", "minecraft:story/mine_stone")
+        }
+        assertEquals("NO_ACTIVE_MATCH", error.code)
+    }
 }

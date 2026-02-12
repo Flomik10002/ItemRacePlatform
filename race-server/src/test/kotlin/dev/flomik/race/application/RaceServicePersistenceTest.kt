@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class RaceServicePersistenceTest {
     @Test
@@ -77,5 +78,33 @@ class RaceServicePersistenceTest {
         service.connect("p1", "Alice", null)
         val snapshot = service.snapshotFor("p1")
         assertEquals("p1", snapshot.self.playerId)
+    }
+
+    @Test
+    fun completedMatchesArePrunedFromPersistedState() = runTest {
+        val store = InMemoryRaceStateStore()
+        val service = RaceService(
+            reconnectGraceMs = 45_000L,
+            clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z")),
+            idGenerator = SequentialIdGenerator(),
+            randomSource = DeterministicRandomSource(longs = mutableListOf(555L)),
+            stateStore = store,
+        )
+
+        service.warmup()
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+        service.rollMatch("p1")
+        service.startMatch("p1")
+        service.finish("p1", rttMs = 1500, igtMs = 1400)
+        service.reportDeath("p2")
+
+        val persisted = store.load()
+        assertNotNull(persisted)
+        assertTrue(persisted.matches.isEmpty())
     }
 }

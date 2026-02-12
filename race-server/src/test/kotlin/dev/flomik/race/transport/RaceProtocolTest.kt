@@ -58,6 +58,17 @@ class RaceProtocolTest {
     }
 
     @Test
+    fun parseAdvancement() {
+        val parsed = ClientMessageParser.parse(
+            json,
+            """{"type":"advancement","id":"minecraft:story/mine_stone"}""",
+        )
+
+        assertTrue(parsed is ClientMessage.Advancement)
+        assertEquals("minecraft:story/mine_stone", parsed.id)
+    }
+
+    @Test
     fun missingTypeProducesError() {
         val error = assertFailsWith<ProtocolException> {
             ClientMessageParser.parse(json, """{"playerId":"p1"}""")
