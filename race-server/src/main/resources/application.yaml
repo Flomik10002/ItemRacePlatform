@@ -4,3 +4,5 @@ ktor:
             - dev.flomik.ApplicationKt.module
     deployment:
         port: 8080
+race:
+    reconnect-grace-ms: 45000

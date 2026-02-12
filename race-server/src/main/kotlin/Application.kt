@@ -1,9 +1,10 @@
 package dev.flomik
 
-import io.ktor.server.application.*
+import dev.flomik.race.application.KotlinRandomSource
+import dev.flomik.race.application.RaceService
+import dev.flomik.race.application.UuidIdGenerator
+import io.ktor.server.application.Application
 import kotlinx.serialization.json.Json
-
-import io.ktor.server.application.*
 
 fun main(args: Array<String>) {
     io.ktor.server.netty.EngineMain.main(args)
@@ -23,11 +24,12 @@ fun Application.module() {
 
     val raceService = RaceService(
         reconnectGraceMs = reconnectGraceMs,
+        idGenerator = UuidIdGenerator(),
+        randomSource = KotlinRandomSource(),
     )
 
-    configureHTTP()
     configureSerialization(json)
     configureMonitoring()
-    configureSockets(raceService, json, reconnectGraceMs)
     configureRouting()
+    configureSockets(raceService, json, reconnectGraceMs)
 }
