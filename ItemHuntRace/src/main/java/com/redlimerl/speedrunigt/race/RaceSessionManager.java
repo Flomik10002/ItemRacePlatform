@@ -65,7 +65,15 @@ public final class RaceSessionManager {
 
     public enum FinishReason { TARGET_OBTAINED, DEATH }
 
-    public record PlayerStatus(UUID id, String name, boolean ready, boolean isLeader) {}
+    public enum ReadyCheckStatus { NONE, READY, NOT_READY }
+
+    public record PlayerStatus(
+            UUID id,
+            String name,
+            boolean connected,
+            boolean isLeader,
+            ReadyCheckStatus readyCheckStatus
+    ) {}
 
     private record FinishTime(String playerId, String playerName, long igtMs, long rtaMs, boolean eliminated) {}
 
@@ -74,6 +82,7 @@ public final class RaceSessionManager {
     public static final String SERVER_URI_PROPERTY = "speedrunigt.race.server";
     private static final String DEFAULT_SERVER_URI = "ws://race.flomik.xyz:8080/race";
     private static final long LOCAL_START_COUNTDOWN_MS = 10_000L;
+    private static final long LEAVE_MATCH_RETRY_INTERVAL_MS = 750L;
 
     private static final RaceSessionManager INSTANCE = new RaceSessionManager();
 
@@ -107,6 +116,8 @@ public final class RaceSessionManager {
     private final List<PlayerStatus> players = new ArrayList<>();
     private final ConcurrentHashMap<String, String> playerNameById = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, FinishTime> finishTimesByPlayerId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReadyCheckStatus> readyCheckStatusByPlayerId = new ConcurrentHashMap<>();
+    private volatile long readyCheckExpiresAtMs = 0L;
 
     private boolean hasPendingMatch = false;
     private String activeMatchId = null;
@@ -122,6 +133,8 @@ public final class RaceSessionManager {
 
     private long lastReconnectAttemptAt = 0L;
     private volatile String cachedClientPlayerId = null;
+    private volatile boolean pendingLeaveMatch = false;
+    private long lastLeaveMatchAttemptAt = 0L;
 
     private RaceSessionManager() {}
 
@@ -151,6 +164,22 @@ public final class RaceSessionManager {
 
     public boolean hasPendingMatch() {
         return hasPendingMatch;
+    }
+
+    public boolean isReadyCheckActive() {
+        return readyCheckExpiresAtMs > System.currentTimeMillis();
+    }
+
+    public int getReadyCheckSecondsRemaining() {
+        if (!isReadyCheckActive()) return 0;
+        long remainingMs = readyCheckExpiresAtMs - System.currentTimeMillis();
+        if (remainingMs <= 0L) return 0;
+        return (int) Math.ceil(remainingMs / 1000.0);
+    }
+
+    public boolean hasLocalReadyCheckResponse() {
+        if (!isReadyCheckActive()) return false;
+        return readyCheckStatusByPlayerId.containsKey(getClientPlayerId());
     }
 
     public Optional<Identifier> getTargetItemId() {
@@ -269,10 +298,21 @@ public final class RaceSessionManager {
         long now = System.currentTimeMillis();
 
         if (state != RaceState.IDLE && connectionStatus == ConnectionStatus.DISCONNECTED) {
-            if (now - lastReconnectAttemptAt >= 1_500L) {
+            long reconnectIntervalMs = pendingLeaveMatch ? 250L : 1_500L;
+            if (now - lastReconnectAttemptAt >= reconnectIntervalMs) {
                 lastReconnectAttemptAt = now;
                 connect();
             }
+        }
+
+        if (pendingLeaveMatch && state != RaceState.IDLE && now - lastLeaveMatchAttemptAt >= LEAVE_MATCH_RETRY_INTERVAL_MS) {
+            lastLeaveMatchAttemptAt = now;
+            sendLeaveMatchCommand();
+        }
+
+        if (readyCheckExpiresAtMs > 0L && now >= readyCheckExpiresAtMs) {
+            readyCheckExpiresAtMs = 0L;
+            readyCheckStatusByPlayerId.clear();
         }
 
         if (state == RaceState.STARTING && !worldCreationRequested && now >= startScheduledAt) {
@@ -366,10 +406,8 @@ public final class RaceSessionManager {
 
     public void leaveMatch() {
         if (state != RaceState.RUNNING && state != RaceState.STARTING) return;
-
-        JsonObject msg = new JsonObject();
-        msg.addProperty("type", "leave_match");
-        send(msg);
+        pendingLeaveMatch = true;
+        sendLeaveMatchCommand();
     }
 
     public void rollMatch() {
@@ -377,6 +415,24 @@ public final class RaceSessionManager {
         if (!isLocalPlayerLeader()) return;
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "roll_match");
+        send(msg);
+    }
+
+    public void startReadyCheck() {
+        if (state != RaceState.LOBBY && state != RaceState.FINISHED) return;
+        if (!isLocalPlayerLeader()) return;
+
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "ready_check");
+        send(msg);
+    }
+
+    public void respondReadyCheck(boolean ready) {
+        if (!isReadyCheckActive()) return;
+
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "ready_check_response");
+        msg.addProperty("ready", ready);
         send(msg);
     }
 
@@ -509,6 +565,8 @@ public final class RaceSessionManager {
         players.clear();
         playerNameById.clear();
         finishTimesByPlayerId.clear();
+        readyCheckStatusByPlayerId.clear();
+        readyCheckExpiresAtMs = 0L;
 
         hasPendingMatch = false;
         activeMatchId = null;
@@ -522,6 +580,8 @@ public final class RaceSessionManager {
         worldCreationRequested = false;
         timerConfigured = false;
         finishTriggered.set(false);
+        pendingLeaveMatch = false;
+        lastLeaveMatchAttemptAt = 0L;
 
         lastReconnectAttemptAt = 0L;
     }
@@ -560,6 +620,12 @@ public final class RaceSessionManager {
     private void sendSyncState() {
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "sync_state");
+        send(msg);
+    }
+
+    private void sendLeaveMatchCommand() {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "leave_match");
         send(msg);
     }
 
@@ -657,6 +723,10 @@ public final class RaceSessionManager {
                 if ("PLAYER_NOT_IN_ROOM".equals(code) || "ROOM_NOT_FOUND".equals(code)) {
                     resetToIdle();
                 }
+                if ("NO_ACTIVE_MATCH".equals(code)) {
+                    pendingLeaveMatch = false;
+                    lastLeaveMatchAttemptAt = 0L;
+                }
             }
             case "state" -> {
                 JsonObject snapshot = msg.has("snapshot") && msg.get("snapshot").isJsonObject()
@@ -683,6 +753,9 @@ public final class RaceSessionManager {
     }
 
     private void applyStateSnapshot(JsonObject snapshot) {
+        Long snapshotServerTime = getLong(snapshot, "serverTimeMs");
+        long serverTimeMs = snapshotServerTime != null ? snapshotServerTime : System.currentTimeMillis();
+
         JsonObject self = snapshot.has("self") && snapshot.get("self").isJsonObject()
                 ? snapshot.getAsJsonObject("self")
                 : null;
@@ -708,6 +781,7 @@ public final class RaceSessionManager {
         roomCode = normalizeRoomCode(code == null ? "" : code);
         leaderPlayerId = getString(room, "leaderId") == null ? "" : getString(room, "leaderId");
 
+        parseReadyCheck(room, serverTimeMs);
         parseRoomPlayers(room);
 
         JsonObject pendingMatchObj = room.has("pendingMatch") && room.get("pendingMatch").isJsonObject()
@@ -737,6 +811,8 @@ public final class RaceSessionManager {
             worldCreationRequested = false;
             timerConfigured = false;
             finishTriggered.set(false);
+            pendingLeaveMatch = false;
+            lastLeaveMatchAttemptAt = 0L;
 
             if (!finishTimesByPlayerId.isEmpty()) {
                 state = RaceState.FINISHED;
@@ -768,11 +844,57 @@ public final class RaceSessionManager {
             if (name == null || name.isBlank()) name = playerId;
 
             playerNameById.put(playerId, name);
-            boolean ready = "CONNECTED".equals(connection);
+            boolean connected = "CONNECTED".equals(connection);
             boolean isLeader = playerId.equals(leaderPlayerId);
+            ReadyCheckStatus readyCheckStatus = readyCheckStatusByPlayerId.getOrDefault(playerId, ReadyCheckStatus.NONE);
 
-            players.add(new PlayerStatus(safeUuid(playerId), name, ready, isLeader));
+            players.add(new PlayerStatus(safeUuid(playerId), name, connected, isLeader, readyCheckStatus));
         }
+    }
+
+    private void parseReadyCheck(JsonObject room, long serverTimeMs) {
+        JsonObject readyCheck = room.has("readyCheck") && room.get("readyCheck").isJsonObject()
+                ? room.getAsJsonObject("readyCheck")
+                : null;
+
+        if (readyCheck == null) {
+            readyCheckExpiresAtMs = 0L;
+            readyCheckStatusByPlayerId.clear();
+            return;
+        }
+
+        Long expiresAtMs = getLong(readyCheck, "expiresAtMs");
+        if (expiresAtMs == null || expiresAtMs <= serverTimeMs) {
+            readyCheckExpiresAtMs = 0L;
+            readyCheckStatusByPlayerId.clear();
+            return;
+        }
+
+        readyCheckExpiresAtMs = expiresAtMs;
+        readyCheckStatusByPlayerId.clear();
+
+        JsonArray responses = readyCheck.has("responses") && readyCheck.get("responses").isJsonArray()
+                ? readyCheck.getAsJsonArray("responses")
+                : new JsonArray();
+
+        for (JsonElement element : responses) {
+            if (!element.isJsonObject()) continue;
+            JsonObject response = element.getAsJsonObject();
+            String playerId = getString(response, "playerId");
+            String rawStatus = getString(response, "status");
+            ReadyCheckStatus status = parseReadyCheckStatus(rawStatus);
+            if (playerId == null || status == ReadyCheckStatus.NONE) continue;
+            readyCheckStatusByPlayerId.put(playerId, status);
+        }
+    }
+
+    private static ReadyCheckStatus parseReadyCheckStatus(String rawStatus) {
+        if (rawStatus == null || rawStatus.isBlank()) return ReadyCheckStatus.NONE;
+        return switch (rawStatus.trim().toUpperCase(Locale.ROOT)) {
+            case "READY" -> ReadyCheckStatus.READY;
+            case "NOT_READY" -> ReadyCheckStatus.NOT_READY;
+            default -> ReadyCheckStatus.NONE;
+        };
     }
 
     private void applyActiveMatch(JsonObject match) {
@@ -868,6 +990,16 @@ public final class RaceSessionManager {
 
         if (totalPlayers > 0 && terminalCount == totalPlayers && firstFinisher != null && !firstFinisher.eliminated) {
             sendWinnerAnnouncement(firstFinisher.playerName, firstFinisher);
+        }
+
+        if ("RUNNING".equals(selfStatus)) {
+            if (pendingLeaveMatch && System.currentTimeMillis() - lastLeaveMatchAttemptAt >= LEAVE_MATCH_RETRY_INTERVAL_MS) {
+                lastLeaveMatchAttemptAt = System.currentTimeMillis();
+                sendLeaveMatchCommand();
+            }
+        } else if (pendingLeaveMatch) {
+            pendingLeaveMatch = false;
+            lastLeaveMatchAttemptAt = 0L;
         }
 
         if (selfStatus == null) {

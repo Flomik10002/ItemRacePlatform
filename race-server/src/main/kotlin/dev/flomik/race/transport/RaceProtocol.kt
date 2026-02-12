@@ -4,6 +4,8 @@ import dev.flomik.race.application.MatchPlayerView
 import dev.flomik.race.application.MatchView
 import dev.flomik.race.application.PendingMatchView
 import dev.flomik.race.application.RaceSnapshot
+import dev.flomik.race.application.ReadyCheckResponseView
+import dev.flomik.race.application.ReadyCheckView
 import dev.flomik.race.application.RoomPlayerView
 import dev.flomik.race.application.RoomView
 import dev.flomik.race.application.SelfView
@@ -11,6 +13,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
@@ -27,6 +30,8 @@ object RaceMessageTypes {
     const val ROLL_MATCH = "roll_match"
     const val START_MATCH = "start_match"
     const val CANCEL_START = "cancel_start"
+    const val READY_CHECK = "ready_check"
+    const val READY_CHECK_RESPONSE = "ready_check_response"
     const val FINISH = "finish"
     const val DEATH = "death"
     const val ADVANCEMENT = "advancement"
@@ -54,6 +59,8 @@ sealed interface ClientMessage {
     data object RollMatch : ClientMessage
     data object StartMatch : ClientMessage
     data object CancelStart : ClientMessage
+    data object ReadyCheck : ClientMessage
+    data class ReadyCheckResponse(val ready: Boolean) : ClientMessage
     data class Finish(val rttMs: Long, val igtMs: Long) : ClientMessage
     data object Death : ClientMessage
     data class Advancement(val id: String) : ClientMessage
@@ -85,6 +92,10 @@ object ClientMessageParser {
             RaceMessageTypes.ROLL_MATCH -> ClientMessage.RollMatch
             RaceMessageTypes.START_MATCH -> ClientMessage.StartMatch
             RaceMessageTypes.CANCEL_START -> ClientMessage.CancelStart
+            RaceMessageTypes.READY_CHECK -> ClientMessage.ReadyCheck
+            RaceMessageTypes.READY_CHECK_RESPONSE -> ClientMessage.ReadyCheckResponse(
+                ready = root.requiredBoolean("ready"),
+            )
             RaceMessageTypes.FINISH -> ClientMessage.Finish(
                 rttMs = root.requiredLong("rttMs"),
                 igtMs = root.requiredLong("igtMs"),
@@ -116,6 +127,15 @@ private fun JsonObject.requiredLong(name: String): Long {
     return primitive.longOrNull
         ?: primitive.doubleOrNull?.toLong()
         ?: primitive.content.toLongOrNull()
+        ?: throw ProtocolException("Missing or invalid '$name'")
+}
+
+private fun JsonObject.requiredBoolean(name: String): Boolean {
+    val primitive = this[name] as? JsonPrimitive
+        ?: throw ProtocolException("Missing or invalid '$name'")
+
+    return primitive.booleanOrNull
+        ?: primitive.contentOrNull?.toBooleanStrictOrNull()
         ?: throw ProtocolException("Missing or invalid '$name'")
 }
 
@@ -188,6 +208,7 @@ data class RoomDto(
     val players: List<RoomPlayerDto>,
     val pendingMatch: PendingMatchDto? = null,
     val currentMatch: MatchDto? = null,
+    val readyCheck: ReadyCheckDto? = null,
 )
 
 @Serializable
@@ -204,6 +225,21 @@ data class PendingMatchDto(
     val targetItem: String,
     val seed: Long,
     val rolledAtMs: Long,
+)
+
+@Serializable
+data class ReadyCheckDto(
+    val initiatedBy: String,
+    val startedAtMs: Long,
+    val expiresAtMs: Long,
+    val responses: List<ReadyCheckResponseDto>,
+)
+
+@Serializable
+data class ReadyCheckResponseDto(
+    val playerId: String,
+    val status: String,
+    val respondedAtMs: Long,
 )
 
 @Serializable
@@ -256,6 +292,7 @@ private fun RoomView.toDto(): RoomDto = RoomDto(
     players = players.map(RoomPlayerView::toDto),
     pendingMatch = pendingMatch?.toDto(),
     currentMatch = currentMatch?.toDto(),
+    readyCheck = readyCheck?.toDto(),
 )
 
 private fun RoomPlayerView.toDto(): RoomPlayerDto = RoomPlayerDto(
@@ -270,6 +307,19 @@ private fun PendingMatchView.toDto(): PendingMatchDto = PendingMatchDto(
     targetItem = targetItem,
     seed = seed,
     rolledAtMs = rolledAtMs,
+)
+
+private fun ReadyCheckView.toDto(): ReadyCheckDto = ReadyCheckDto(
+    initiatedBy = initiatedBy,
+    startedAtMs = startedAtMs,
+    expiresAtMs = expiresAtMs,
+    responses = responses.map(ReadyCheckResponseView::toDto),
+)
+
+private fun ReadyCheckResponseView.toDto(): ReadyCheckResponseDto = ReadyCheckResponseDto(
+    playerId = playerId,
+    status = status.name,
+    respondedAtMs = respondedAtMs,
 )
 
 private fun MatchView.toDto(): MatchDto = MatchDto(

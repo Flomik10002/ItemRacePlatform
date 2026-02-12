@@ -46,6 +46,9 @@ public class RaceLobbyScreen extends Screen {
 
 		    private ButtonWidget rollButton;
 		    private ButtonWidget startButton;
+            private ButtonWidget readyCheckButton;
+            private ButtonWidget readyCheckReadyButton;
+            private ButtonWidget readyCheckNotReadyButton;
 		    private long codeCopiedUntil = 0;
         private long lastHealthCheckAt = 0L;
 
@@ -63,6 +66,9 @@ public class RaceLobbyScreen extends Screen {
 		        this.clearChildren();
 		        this.rollButton = null;
 		        this.startButton = null;
+                this.readyCheckButton = null;
+                this.readyCheckReadyButton = null;
+                this.readyCheckNotReadyButton = null;
 
 		        RaceSessionManager race = RaceSessionManager.getInstance();
 		        lastState = race.getState();
@@ -148,6 +154,34 @@ public class RaceLobbyScreen extends Screen {
 		                race.leaveRoom();
 		                this.init(this.width, this.height);
 		            }));
+
+                    int readyCheckButtonY = this.height - 30;
+                    this.readyCheckButton = this.addDrawableChild(ButtonWidgetHelper.create(
+                            playersPanelX + 10,
+                            readyCheckButtonY,
+                            playersPanelWidth - 20,
+                            20,
+                            Text.translatable("speedrunigt.race.ready_check.button").formatted(Formatting.WHITE),
+                            button -> race.startReadyCheck()
+                    ));
+
+                    int modalY = this.height / 2 - 2;
+                    this.readyCheckReadyButton = this.addDrawableChild(ButtonWidgetHelper.create(
+                            centerX - 116,
+                            modalY,
+                            110,
+                            20,
+                            Text.translatable("speedrunigt.race.ready_check.ready").formatted(Formatting.WHITE),
+                            button -> race.respondReadyCheck(true)
+                    ));
+                    this.readyCheckNotReadyButton = this.addDrawableChild(ButtonWidgetHelper.create(
+                            centerX + 6,
+                            modalY,
+                            110,
+                            20,
+                            Text.translatable("speedrunigt.race.ready_check.not_ready").formatted(Formatting.WHITE),
+                            button -> race.respondReadyCheck(false)
+                    ));
 		        }
 
 	        // Back button (bottom left)
@@ -172,10 +206,35 @@ public class RaceLobbyScreen extends Screen {
         boolean leader = race.isLocalPlayerLeader();
         boolean hasPending = race.hasPendingMatch();
         boolean isLobbyOrFinished = race.getState() == RaceState.LOBBY || race.getState() == RaceState.FINISHED;
+        boolean readyCheckActive = race.isReadyCheckActive();
+        boolean showReadyCheckPrompt = readyCheckActive && !race.hasLocalReadyCheckResponse();
 
         if (rollButton != null) {
             rollButton.active = leader && isLobbyOrFinished;
             rollButton.visible = isLobbyOrFinished;
+        }
+
+        if (readyCheckButton != null) {
+            readyCheckButton.visible = isLobbyOrFinished;
+            readyCheckButton.active = isLobbyOrFinished && leader && !readyCheckActive;
+            if (readyCheckActive) {
+                readyCheckButton.setMessage(
+                        Text.translatable("speedrunigt.race.ready_check.active", race.getReadyCheckSecondsRemaining())
+                );
+            } else if (!leader) {
+                readyCheckButton.setMessage(Text.translatable("speedrunigt.race.ready_check.leader_only"));
+            } else {
+                readyCheckButton.setMessage(Text.translatable("speedrunigt.race.ready_check.button"));
+            }
+        }
+
+        if (readyCheckReadyButton != null) {
+            readyCheckReadyButton.visible = showReadyCheckPrompt;
+            readyCheckReadyButton.active = showReadyCheckPrompt;
+        }
+        if (readyCheckNotReadyButton != null) {
+            readyCheckNotReadyButton.visible = showReadyCheckPrompt;
+            readyCheckNotReadyButton.active = showReadyCheckPrompt;
         }
 
         if (startButton == null) return;
@@ -419,20 +478,24 @@ public class RaceLobbyScreen extends Screen {
 	            }
 	        }
 
+            if (race.getState() != RaceState.IDLE && race.isReadyCheckActive() && !race.hasLocalReadyCheckResponse()) {
+                renderReadyCheckPrompt(context, race.getReadyCheckSecondsRemaining());
+            }
+
 	        // Render all widgets (buttons, text fields) on TOP of boxes
 	        super.render(context, mouseX, mouseY, delta);
 	    }
 
     private void drawBox(DrawContext context, int x, int y, int width, int height) {
-        // Dark semi-transparent background
-        context.fill(x, y, x + width, y + height, 0xAA000000);
-        
-        // Border (light gray)
-        int borderColor = 0xFF555555;
-        context.fill(x, y, x + width, y + 1, borderColor); // Top
-        context.fill(x, y + height - 1, x + width, y + height, borderColor); // Bottom
-        context.fill(x, y, x + 1, y + height, borderColor); // Left
-        context.fill(x + width - 1, y, x + width, y + height, borderColor); // Right
+        drawBox(context, x, y, width, height, 0xAA000000, 0xFF555555);
+    }
+
+    private void drawBox(DrawContext context, int x, int y, int width, int height, int fillColor, int borderColor) {
+        context.fill(x, y, x + width, y + height, fillColor);
+        context.fill(x, y, x + width, y + 1, borderColor);
+        context.fill(x, y + height - 1, x + width, y + height, borderColor);
+        context.fill(x, y, x + 1, y + height, borderColor);
+        context.fill(x + width - 1, y, x + width, y + height, borderColor);
     }
 
 	    private void drawScaledCenteredText(DrawContext context, Text text, int centerX, int y, float scale, int color) {
@@ -461,28 +524,42 @@ public class RaceLobbyScreen extends Screen {
 		                panelX + panelWidth / 2, y, 0xFFFFAA00);
 		        y += 16;
 
-		        int rowHeight = 26;
+		        int rowHeight = 32;
 		        int rowWidth = panelWidth - 20;
-		        int maxRows = Math.max(0, (panelHeight - y - 10) / rowHeight);
+                int footerReserved = readyCheckButton != null && readyCheckButton.visible ? 44 : 10;
+		        int maxRows = Math.max(0, (panelHeight - y - footerReserved) / rowHeight);
 		        for (int i = 0; i < Math.min(sortedPlayers.size(), maxRows); i++) {
 		            int rowY = y + i * rowHeight;
-		            int rowBoxHeight = rowHeight - 4;
-		            drawBox(context, innerX, rowY, rowWidth, rowBoxHeight);
+                    int rowBoxY = rowY + 1;
+		            int rowBoxHeight = rowHeight - 5;
+                    RaceSessionManager.ReadyCheckStatus rowStatus = sortedPlayers.get(i).readyCheckStatus();
+                    int rowFill = 0xAA000000;
+                    int rowBorder = 0xFF555555;
+                    if (rowStatus == RaceSessionManager.ReadyCheckStatus.READY) {
+                        rowFill = 0xAA114221;
+                        rowBorder = 0xFF55FF55;
+                    } else if (rowStatus == RaceSessionManager.ReadyCheckStatus.NOT_READY) {
+                        rowFill = 0xAA4A1717;
+                        rowBorder = 0xFFFF5555;
+                    }
+                    drawBox(context, innerX, rowBoxY, rowWidth, rowBoxHeight, rowFill, rowBorder);
 
 		            RaceSessionManager.PlayerStatus p = sortedPlayers.get(i);
 		                Identifier skin = getPlayerSkinTexture(p.name());
-		                int headX = innerX + 2;
-		                int headY = rowY + 2;
+                        int headSize = 16;
+		                int headX = innerX + 5;
+		                int headY = rowBoxY + Math.max(0, (rowBoxHeight - headSize) / 2);
 		                context.drawTexture(RenderPipelines.GUI_TEXTURED, skin, headX, headY, 8, 8, 16, 16, 8, 8, 64, 64);
 		                context.drawTexture(RenderPipelines.GUI_TEXTURED, skin, headX, headY, 40, 8, 16, 16, 8, 8, 64, 64);
 
 					if (p.isLeader()) {
-                        context.fill(headX - 1, headY - 1, headX + 3, headY + 3, 0xFFAA00FF);
+                        context.fill(headX - 5, headY - 5, headX + 3, headY + 3, 0xFFFFA500);
 	                }
 
 		                int nameX = innerX + 26;
-		                MutableText nameText = Text.literal(p.name()).formatted(Formatting.WHITE);
-		                context.drawTextWithShadow(this.textRenderer, nameText, nameX, rowY + 6, Colors.WHITE);
+                        int nameY = rowBoxY + Math.max(0, (rowBoxHeight - this.textRenderer.fontHeight) / 2);
+		                MutableText nameText = Text.literal(p.name()).formatted(Formatting.BOLD);
+		                context.drawTextWithShadow(this.textRenderer, nameText, nameX, nameY, Colors.WHITE);
 		        }
 		    }
 
@@ -582,6 +659,30 @@ public class RaceLobbyScreen extends Screen {
     private static String normalizeNameKey(String name) {
         if (name == null) return "";
         return name.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void renderReadyCheckPrompt(DrawContext context, int secondsLeft) {
+        int promptWidth = 260;
+        int promptHeight = 76;
+        int x = this.width / 2 - promptWidth / 2;
+        int y = this.height / 2 - promptHeight / 2 - 18;
+
+        context.fill(0, 0, this.width, this.height, 0x66000000);
+        drawBox(context, x, y, promptWidth, promptHeight);
+        context.drawCenteredTextWithShadow(
+                this.textRenderer,
+                Text.translatable("speedrunigt.race.ready_check.prompt").formatted(Formatting.WHITE, Formatting.BOLD),
+                this.width / 2,
+                y + 12,
+                Colors.WHITE
+        );
+        context.drawCenteredTextWithShadow(
+                this.textRenderer,
+                Text.translatable("speedrunigt.race.ready_check.timer", Math.max(0, secondsLeft)).formatted(Formatting.GRAY),
+                this.width / 2,
+                y + 30,
+                0xFFBBBBBB
+        );
     }
 
     private void renderTargetSection(DrawContext context, int centerX, int y) {

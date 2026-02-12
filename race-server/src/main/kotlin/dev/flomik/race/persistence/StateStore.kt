@@ -92,6 +92,7 @@ data class PersistedRoom(
     val leaderId: String,
     val currentMatchId: String? = null,
     val pendingMatch: PersistedPendingMatch? = null,
+    val readyCheck: PersistedReadyCheck? = null,
     val revisionCounter: Int = 0,
     val pendingRemovals: List<String> = emptyList(),
 )
@@ -102,6 +103,21 @@ data class PersistedPendingMatch(
     val seed: Long,
     val rolledAtMs: Long,
     val revision: Int,
+)
+
+@Serializable
+data class PersistedReadyCheck(
+    val initiatedBy: String,
+    val startedAtMs: Long,
+    val expiresAtMs: Long,
+    val responses: List<PersistedReadyCheckResponse> = emptyList(),
+)
+
+@Serializable
+data class PersistedReadyCheckResponse(
+    val playerId: String,
+    val status: String,
+    val respondedAtMs: Long,
 )
 
 @Serializable

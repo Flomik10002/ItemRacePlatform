@@ -107,6 +107,20 @@ fun buildProtocolCatalog(): ProtocolCatalog {
                 fields = emptyList(),
             ),
             ProtocolMessageSpec(
+                type = RaceMessageTypes.READY_CHECK,
+                direction = "client_to_server",
+                description = "Leader-only: start 10-second readiness poll in the room.",
+                fields = emptyList(),
+            ),
+            ProtocolMessageSpec(
+                type = RaceMessageTypes.READY_CHECK_RESPONSE,
+                direction = "client_to_server",
+                description = "Respond to active readiness poll.",
+                fields = listOf(
+                    ProtocolFieldSpec("ready", "boolean", true, "true for READY, false for NOT_READY."),
+                ),
+            ),
+            ProtocolMessageSpec(
                 type = RaceMessageTypes.FINISH,
                 direction = "client_to_server",
                 description = "Report successful run result.",

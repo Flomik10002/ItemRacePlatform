@@ -3,6 +3,7 @@ package dev.flomik.race.application
 import dev.flomik.race.domain.DomainException
 import dev.flomik.race.domain.LeaveReason
 import dev.flomik.race.domain.PlayerStatus
+import dev.flomik.race.domain.ReadyCheckStatus
 import dev.flomik.race.support.DeterministicRandomSource
 import dev.flomik.race.support.MutableClock
 import dev.flomik.race.support.SequentialIdGenerator
@@ -13,6 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class RaceServiceLifecycleTest {
     private fun createService(clock: MutableClock): RaceService {
@@ -238,5 +240,130 @@ class RaceServiceLifecycleTest {
             service.reportAdvancement("p1", "minecraft:story/mine_stone")
         }
         assertEquals("NO_ACTIVE_MATCH", error.code)
+    }
+
+    @Test
+    fun readyCheckLifecycleAndResponses() = runTest {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val service = createService(clock)
+
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+
+        service.startReadyCheck("p1")
+        service.respondReadyCheck("p1", ready = true)
+        service.respondReadyCheck("p2", ready = false)
+
+        val room = service.snapshotFor("p1").room
+        assertNotNull(room)
+        val readyCheck = room.readyCheck
+        assertNotNull(readyCheck)
+        assertEquals("p1", readyCheck.initiatedBy)
+        assertEquals(2, readyCheck.responses.size)
+        assertEquals(
+            ReadyCheckStatus.READY,
+            readyCheck.responses.first { it.playerId == "p1" }.status,
+        )
+        assertEquals(
+            ReadyCheckStatus.NOT_READY,
+            readyCheck.responses.first { it.playerId == "p2" }.status,
+        )
+
+        clock.advanceMillis(10_001L)
+        val expired = service.snapshotFor("p1").room
+        assertNotNull(expired)
+        assertNull(expired.readyCheck)
+    }
+
+    @Test
+    fun nonLeaderCannotStartReadyCheck() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+
+        val error = assertFailsWith<DomainException> {
+            service.startReadyCheck("p2")
+        }
+        assertEquals("NOT_ROOM_LEADER", error.code)
+    }
+
+    @Test
+    fun readyCheckCannotStartDuringActiveMatch() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.createRoom("p1")
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        val error = assertFailsWith<DomainException> {
+            service.startReadyCheck("p1")
+        }
+        assertEquals("MATCH_ALREADY_ACTIVE", error.code)
+    }
+
+    @Test
+    fun respondReadyCheckFailsWhenNoReadyCheckActive() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.createRoom("p1")
+
+        val error = assertFailsWith<DomainException> {
+            service.respondReadyCheck("p1", ready = true)
+        }
+        assertEquals("READY_CHECK_NOT_ACTIVE", error.code)
+    }
+
+    @Test
+    fun readyCheckIsClearedOnRosterChange() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+
+        service.startReadyCheck("p1")
+        service.leaveRoom("p2")
+
+        val room = service.snapshotFor("p1").room
+        assertNotNull(room)
+        assertEquals(listOf("p1"), room.players.map { it.playerId })
+        assertNull(room.readyCheck)
+        assertTrue(room.pendingMatch == null)
+    }
+
+    @Test
+    fun soloLeaveMatchCompletesMatchAndAllowsRollingNextOne() = runTest {
+        val service = createService(MutableClock(Instant.parse("2026-01-01T00:00:00Z")))
+
+        service.connect("p1", "Alice", null)
+        service.createRoom("p1")
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        service.leaveMatch("p1")
+
+        val roomAfterLeave = service.snapshotFor("p1").room
+        assertNotNull(roomAfterLeave)
+        assertNull(roomAfterLeave.currentMatch)
+        assertEquals(listOf("p1"), roomAfterLeave.players.map { it.playerId })
+
+        service.rollMatch("p1")
+        val roomAfterRoll = service.snapshotFor("p1").room
+        assertNotNull(roomAfterRoll)
+        assertNotNull(roomAfterRoll.pendingMatch)
     }
 }

@@ -30,6 +30,11 @@ enum class MatchLifecycleStatus {
     COMPLETED,
 }
 
+enum class ReadyCheckStatus {
+    READY,
+    NOT_READY,
+}
+
 data class Room(
     val id: RoomId,
     val code: String,
@@ -37,6 +42,7 @@ data class Room(
     var leaderId: PlayerId,
     var currentMatchId: MatchId? = null,
     var pendingMatch: PendingMatchConfig? = null,
+    var readyCheck: ReadyCheck? = null,
     var revisionCounter: Int = 0,
     val pendingRemovals: LinkedHashSet<PlayerId> = linkedSetOf(),
 )
@@ -46,6 +52,18 @@ data class PendingMatchConfig(
     val seed: Long,
     val rolledAt: Instant,
     val revision: Int,
+)
+
+data class ReadyCheck(
+    val initiatedBy: PlayerId,
+    val startedAt: Instant,
+    val expiresAt: Instant,
+    val responses: MutableMap<PlayerId, ReadyCheckResponse>,
+)
+
+data class ReadyCheckResponse(
+    var status: ReadyCheckStatus,
+    var respondedAt: Instant,
 )
 
 data class Match(

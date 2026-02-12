@@ -1,6 +1,7 @@
 package dev.flomik.race.application
 
 import dev.flomik.race.domain.ConnectionState
+import dev.flomik.race.domain.ReadyCheckStatus
 import dev.flomik.race.persistence.InMemoryRaceStateStore
 import dev.flomik.race.support.DeterministicRandomSource
 import dev.flomik.race.support.MutableClock
@@ -106,5 +107,48 @@ class RaceServicePersistenceTest {
         val persisted = store.load()
         assertNotNull(persisted)
         assertTrue(persisted.matches.isEmpty())
+    }
+
+    @Test
+    fun warmupRestoresActiveReadyCheckFromStore() = runTest {
+        val store = InMemoryRaceStateStore()
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+
+        val first = RaceService(
+            reconnectGraceMs = 45_000L,
+            clock = clock,
+            idGenerator = SequentialIdGenerator(),
+            randomSource = DeterministicRandomSource(longs = mutableListOf(999L)),
+            stateStore = store,
+        )
+
+        first.warmup()
+        first.connect("p1", "Alice", null)
+        first.connect("p2", "Bob", null)
+        first.createRoom("p1")
+        val roomCode = first.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        first.joinRoom("p2", roomCode)
+        first.startReadyCheck("p1")
+        first.respondReadyCheck("p2", ready = false)
+
+        val second = RaceService(
+            reconnectGraceMs = 45_000L,
+            clock = MutableClock(Instant.parse("2026-01-01T00:00:05Z")),
+            idGenerator = SequentialIdGenerator(),
+            randomSource = DeterministicRandomSource(longs = mutableListOf(111L)),
+            stateStore = store,
+        )
+
+        second.warmup()
+        second.connect("p1", "Alice", null)
+        val snapshot = second.snapshotFor("p1")
+        val room = snapshot.room
+        assertNotNull(room)
+        val readyCheck = room.readyCheck
+        assertNotNull(readyCheck)
+        assertEquals("p1", readyCheck.initiatedBy)
+        assertEquals(1, readyCheck.responses.size)
+        assertEquals(ReadyCheckStatus.NOT_READY, readyCheck.responses.single().status)
     }
 }

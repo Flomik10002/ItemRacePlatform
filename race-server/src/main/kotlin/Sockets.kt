@@ -194,6 +194,14 @@ fun Application.configureSockets(
                                 raceService.cancelStart(actor)
                             }
 
+                            is ClientMessage.ReadyCheck -> handleAction("ready_check") { actor ->
+                                raceService.startReadyCheck(actor)
+                            }
+
+                            is ClientMessage.ReadyCheckResponse -> handleAction("ready_check_response") { actor ->
+                                raceService.respondReadyCheck(actor, parsed.ready)
+                            }
+
                             is ClientMessage.Finish -> handleAction("finish") { actor ->
                                 raceService.finish(
                                     playerId = actor,
