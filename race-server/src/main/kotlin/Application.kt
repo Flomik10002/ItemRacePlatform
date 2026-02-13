@@ -21,6 +21,25 @@ fun Application.module() {
         envKey = "RACE_RECONNECT_GRACE_MS",
     )?.toLongOrNull()
         ?: 45_000L
+    val pingTimeoutMs = readConfigOrEnv(
+        configKey = "race.ping-timeout-ms",
+        envKey = "RACE_PING_TIMEOUT_MS",
+    )?.toLongOrNull()
+        ?: 180_000L
+    val adminEnabled = readConfigOrEnv(
+        configKey = "race.admin.enabled",
+        envKey = "RACE_ADMIN_ENABLED",
+    )?.toBooleanStrictOrNull()
+        ?: true
+    val adminToken = readConfigOrEnv(
+        configKey = "race.admin.token",
+        envKey = "RACE_ADMIN_TOKEN",
+    )?.trim()?.takeIf { it.isNotEmpty() } ?: "7f3c9a1e4b82d6c0f5a97e3b2d8c4f1a6b9e2d7c8a1f0b3e4c6d9a2f7b8c1e5".also {
+        environment.log.warn(
+            "Admin token is not configured; using insecure default token '{}'. Set RACE_ADMIN_TOKEN in production.",
+            it,
+        )
+    }
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -100,8 +119,15 @@ fun Application.module() {
 
     configureSerialization(json)
     configureMonitoring()
-    configureRouting()
-    configureSockets(raceService, json, reconnectGraceMs)
+    configureRouting(adminEnabled = adminEnabled)
+    configureSockets(
+        raceService = raceService,
+        json = json,
+        reconnectGraceMs = reconnectGraceMs,
+        pingTimeoutMs = pingTimeoutMs,
+        adminEnabled = adminEnabled,
+        adminToken = adminToken,
+    )
 }
 
 private fun Application.readConfigOrEnv(configKey: String, envKey: String): String? {

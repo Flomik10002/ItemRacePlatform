@@ -2,6 +2,7 @@ package dev.flomik
 
 import dev.flomik.race.application.RaceService
 import dev.flomik.race.domain.DomainException
+import dev.flomik.race.domain.LeaveReason
 import dev.flomik.race.domain.PlayerId
 import dev.flomik.race.domain.SessionId
 import dev.flomik.race.transport.AckMessage
@@ -14,10 +15,19 @@ import dev.flomik.race.transport.ProtocolException
 import dev.flomik.race.transport.ServerMessage
 import dev.flomik.race.transport.StateMessage
 import dev.flomik.race.transport.WelcomeMessage
-import dev.flomik.race.transport.toDto
 import dev.flomik.race.transport.isIgnorableAdvancementId
+import dev.flomik.race.transport.toDto
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.ApplicationStopped
+import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.request.receive
+import io.ktor.server.response.respond
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.WebSocketServerSession
@@ -30,9 +40,16 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import java.util.concurrent.ConcurrentHashMap
+import io.ktor.http.HttpStatusCode
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -41,9 +58,16 @@ fun Application.configureSockets(
     raceService: RaceService,
     json: Json,
     reconnectGraceMs: Long,
+    pingTimeoutMs: Long,
+    adminEnabled: Boolean,
+    adminToken: String,
 ) {
     val logger = LoggerFactory.getLogger("RaceSockets")
+    val effectivePingTimeoutMs = pingTimeoutMs.coerceAtLeast(1_000L)
+    val socketsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val socketsByPlayerId = ConcurrentHashMap<PlayerId, WebSocketServerSession>()
+    val sessionsByPlayerId = ConcurrentHashMap<PlayerId, SessionId>()
+    val lastHeartbeatByPlayerId = ConcurrentHashMap<PlayerId, Long>()
 
     suspend fun broadcastStateSnapshots(playerIds: Set<PlayerId>) {
         for (targetPlayerId in playerIds) {
@@ -62,6 +86,98 @@ fun Application.configureSockets(
         }
     }
 
+    monitor.subscribe(ApplicationStopped) {
+        socketsScope.cancel("Application stopped")
+    }
+
+    socketsScope.launch {
+        while (isActive) {
+            delay(10_000L)
+
+            val nowMs = System.currentTimeMillis()
+            val candidatePlayerIds = sessionsByPlayerId.keys.toList()
+
+            for (playerId in candidatePlayerIds) {
+                val sessionId = sessionsByPlayerId[playerId] ?: continue
+                val lastHeartbeatAt = lastHeartbeatByPlayerId[playerId] ?: continue
+                if (nowMs - lastHeartbeatAt < effectivePingTimeoutMs) {
+                    continue
+                }
+
+                val latestSessionId = sessionsByPlayerId[playerId] ?: continue
+                if (latestSessionId != sessionId) {
+                    continue
+                }
+
+                logger.info(
+                    "No heartbeat from player {} for {}ms, forcing room leave",
+                    playerId,
+                    nowMs - lastHeartbeatAt,
+                )
+
+                val leaveAffected = try {
+                    raceService.leaveRoom(
+                        playerId = playerId,
+                        reason = LeaveReason.RECONNECT_TIMEOUT,
+                    )
+                } catch (e: DomainException) {
+                    if (e.code != "PLAYER_NOT_IN_ROOM") {
+                        logger.warn("Failed to apply timeout leave for player {}", playerId, e)
+                    }
+                    emptySet()
+                } catch (e: Exception) {
+                    logger.warn("Failed to apply timeout leave for player {}", playerId, e)
+                    emptySet()
+                }
+                broadcastStateSnapshots(leaveAffected)
+
+                val disconnectAffected = runCatching {
+                    raceService.disconnect(playerId, sessionId)
+                }.onFailure {
+                    logger.debug("Failed to disconnect timed out player {}", playerId, it)
+                }.getOrDefault(emptySet())
+                broadcastStateSnapshots(disconnectAffected)
+
+                val socket = socketsByPlayerId[playerId]
+                if (socket != null) {
+                    socketsByPlayerId.remove(playerId, socket)
+                } else {
+                    socketsByPlayerId.remove(playerId)
+                }
+                if (sessionsByPlayerId.remove(playerId, sessionId)) {
+                    lastHeartbeatByPlayerId.remove(playerId)
+                }
+
+                if (socket != null) {
+                    runCatching {
+                        socket.close(
+                            CloseReason(
+                                code = CloseReason.Codes.NORMAL,
+                                message = "Ping timeout",
+                            ),
+                        )
+                    }
+                }
+
+                launch {
+                    delay(reconnectGraceMs)
+                    val timeoutAffected = raceService.handleReconnectTimeout(
+                        playerId = playerId,
+                        sessionId = sessionId,
+                    )
+                    broadcastStateSnapshots(timeoutAffected)
+                }
+            }
+
+            val staleDisconnectedAffected = runCatching {
+                raceService.evictInactiveDisconnectedPlayers(effectivePingTimeoutMs)
+            }.onFailure {
+                logger.warn("Failed to evict stale disconnected players", it)
+            }.getOrDefault(emptySet())
+            broadcastStateSnapshots(staleDisconnectedAffected)
+        }
+    }
+
     install(WebSockets) {
         pingPeriod = 15.seconds
         timeout = 15.seconds
@@ -70,6 +186,118 @@ fun Application.configureSockets(
     }
 
     routing {
+        if (adminEnabled) {
+            route("/admin/api") {
+                suspend fun isAuthorized(call: ApplicationCall): Boolean {
+                    val headerToken = call.request.headers["X-Admin-Token"]?.trim()
+                    val bearerToken = call.request.headers["Authorization"]
+                        ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+                        ?.substringAfter("Bearer ")
+                        ?.trim()
+                    val providedToken = headerToken ?: bearerToken
+                    if (providedToken == adminToken) return true
+
+                    call.respond(
+                        HttpStatusCode.Unauthorized,
+                        AdminApiError(code = "UNAUTHORIZED", message = "Missing or invalid admin token"),
+                    )
+                    return false
+                }
+
+                suspend fun runAdminAction(
+                    call: ApplicationCall,
+                    action: String,
+                    block: suspend () -> Set<PlayerId>,
+                ) {
+                    if (!isAuthorized(call)) return
+                    try {
+                        val affected = block()
+                        broadcastStateSnapshots(affected)
+                        call.respond(
+                            AdminActionResponse(
+                                ok = true,
+                                action = action,
+                                affectedPlayerIds = affected.sorted(),
+                            ),
+                        )
+                    } catch (e: DomainException) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            AdminApiError(code = e.code, message = e.message),
+                        )
+                    } catch (e: Exception) {
+                        logger.error("Admin action '{}' failed", action, e)
+                        call.respond(
+                            HttpStatusCode.InternalServerError,
+                            AdminApiError(code = "INTERNAL_ERROR", message = "Unexpected server error"),
+                        )
+                    }
+                }
+
+                get("/overview") {
+                    if (!isAuthorized(call)) return@get
+                    call.respond(raceService.adminOverview())
+                }
+
+                post("/evict-stale") {
+                    runAdminAction(call, "evict_stale") {
+                        raceService.evictInactiveDisconnectedPlayers(effectivePingTimeoutMs)
+                    }
+                }
+
+                post("/rooms/{roomCode}/kick") {
+                    runAdminAction(call, "kick_player") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminKickPlayer(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/leave-match") {
+                    runAdminAction(call, "force_leave_match") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminForceLeaveMatch(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/promote-leader") {
+                    runAdminAction(call, "promote_leader") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminPromoteLeader(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/abort-match") {
+                    runAdminAction(call, "abort_match") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminAbortMatch(roomCode)
+                    }
+                }
+
+                post("/rooms/{roomCode}/remove-disconnected") {
+                    runAdminAction(call, "remove_disconnected") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminRemoveDisconnectedPlayers(roomCode)
+                    }
+                }
+
+                delete("/rooms/{roomCode}") {
+                    runAdminAction(call, "delete_room") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminDeleteRoom(roomCode)
+                    }
+                }
+            }
+        }
+
         webSocket("/race") {
             var currentPlayerId: PlayerId? = null
             var currentSessionId: SessionId? = null
@@ -108,6 +336,13 @@ fun Application.configureSockets(
                     }
 
                     try {
+                        val actor = currentPlayerId
+                        val sessionId = currentSessionId
+                        if (actor != null && sessionId != null) {
+                            lastHeartbeatByPlayerId[actor] = System.currentTimeMillis()
+                            raceService.touchHeartbeat(actor, sessionId)
+                        }
+
                         when (parsed) {
                             is ClientMessage.Ping -> {
                                 sendServerMessage(
@@ -130,6 +365,8 @@ fun Application.configureSockets(
 
                                 currentPlayerId = parsed.playerId
                                 currentSessionId = result.sessionId
+                                sessionsByPlayerId[parsed.playerId] = result.sessionId
+                                lastHeartbeatByPlayerId[parsed.playerId] = System.currentTimeMillis()
 
                                 val previousSocket = socketsByPlayerId.put(parsed.playerId, this)
                                 if (previousSocket != null && previousSocket != this) {
@@ -249,21 +486,26 @@ fun Application.configureSockets(
                 val playerId = currentPlayerId
                 val sessionId = currentSessionId
                 if (playerId != null && sessionId != null) {
-                    socketsByPlayerId.remove(playerId, this)
+                    val removedCurrentSocket = socketsByPlayerId.remove(playerId, this)
+                    if (removedCurrentSocket) {
+                        if (sessionsByPlayerId.remove(playerId, sessionId)) {
+                            lastHeartbeatByPlayerId.remove(playerId)
+                        }
 
-                    val affected = raceService.disconnect(
-                        playerId = playerId,
-                        sessionId = sessionId,
-                    )
-                    broadcastStateSnapshots(affected)
-
-                    launch {
-                        delay(reconnectGraceMs)
-                        val timeoutAffected = raceService.handleReconnectTimeout(
+                        val affected = raceService.disconnect(
                             playerId = playerId,
                             sessionId = sessionId,
                         )
-                        broadcastStateSnapshots(timeoutAffected)
+                        broadcastStateSnapshots(affected)
+
+                        launch {
+                            delay(reconnectGraceMs)
+                            val timeoutAffected = raceService.handleReconnectTimeout(
+                                playerId = playerId,
+                                sessionId = sessionId,
+                            )
+                            broadcastStateSnapshots(timeoutAffected)
+                        }
                     }
                 }
             }
@@ -286,3 +528,21 @@ private suspend fun WebSocketServerSession.sendServerMessage(
 
     send(Frame.Text(text))
 }
+
+@Serializable
+private data class AdminPlayerRequest(
+    val playerId: String,
+)
+
+@Serializable
+private data class AdminActionResponse(
+    val ok: Boolean,
+    val action: String,
+    val affectedPlayerIds: List<String>,
+)
+
+@Serializable
+private data class AdminApiError(
+    val code: String,
+    val message: String,
+)

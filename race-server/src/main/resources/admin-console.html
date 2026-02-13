@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Item Race Admin</title>
+  <style>
+    :root {
+      --bg: #10161c;
+      --card: #17222b;
+      --accent: #3abff8;
+      --danger: #ff5f5f;
+      --ok: #47d18c;
+      --muted: #93a1ad;
+      --text: #f0f5f9;
+      --border: #2f404f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "JetBrains Mono", "Iosevka", "Fira Code", monospace;
+      background: linear-gradient(145deg, #0a1117, #121c25);
+      color: var(--text);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 14px 0; font-size: 26px; }
+    h2 { margin: 0 0 10px 0; font-size: 18px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    input[type="password"] {
+      background: #0e161d;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      min-width: 320px;
+    }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #20303b;
+      color: var(--text);
+      padding: 8px 10px;
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { filter: brightness(1.1); }
+    button.primary { background: #1e4f66; border-color: #2c6f8d; }
+    button.warn { background: #5b2424; border-color: #7d3535; }
+    button.ok { background: #1d5138; border-color: #2f7d57; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .room-grid { display: grid; gap: 12px; }
+    .room-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+    }
+    .badge.ok {
+      color: #80ffbf;
+      border-color: #34745a;
+      background: rgba(56, 133, 98, 0.2);
+    }
+    .badge.warn {
+      color: #ffc2c2;
+      border-color: #7e4747;
+      background: rgba(134, 68, 68, 0.2);
+    }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      padding: 7px 6px;
+      vertical-align: top;
+    }
+    th { color: #a5c4d8; }
+    tr:last-child td { border-bottom: none; }
+    code {
+      background: #0d171f;
+      padding: 1px 4px;
+      border-radius: 4px;
+      border: 1px solid #22303c;
+    }
+    #status { min-height: 18px; }
+    @media (max-width: 900px) {
+      input[type="password"] { min-width: 100%; }
+      .wrap { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Item Race Admin Console</h1>
+    <div class="card">
+      <div class="toolbar">
+        <input id="token" type="password" placeholder="Admin token (RACE_ADMIN_TOKEN)">
+        <button id="saveToken">Save Token</button>
+        <button id="refresh" class="primary">Refresh</button>
+        <button id="evict" class="warn">Evict Stale Disconnected</button>
+      </div>
+      <div id="status" class="muted"></div>
+    </div>
+
+    <div class="card">
+      <h2>Detached Players</h2>
+      <div id="detached" class="muted">No data</div>
+    </div>
+
+    <div id="rooms" class="room-grid"></div>
+  </div>
+
+  <script>
+    const tokenInput = document.getElementById('token');
+    const statusEl = document.getElementById('status');
+    const roomsEl = document.getElementById('rooms');
+    const detachedEl = document.getElementById('detached');
+
+    tokenInput.value = localStorage.getItem('item-race-admin-token') || '';
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.style.color = isError ? '#ffb3b3' : '#9ec3d8';
+    }
+
+    function authHeaders() {
+      const token = tokenInput.value.trim();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['X-Admin-Token'] = token;
+      return headers;
+    }
+
+    async function api(path, method = 'GET', body = null) {
+      const init = { method, headers: authHeaders() };
+      if (body !== null) init.body = JSON.stringify(body);
+      const res = await fetch(path, init);
+      const text = await res.text();
+      let payload = null;
+      try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = { raw: text }; }
+      if (!res.ok) {
+        const msg = payload?.message || payload?.raw || (`HTTP ${res.status}`);
+        throw new Error(msg);
+      }
+      return payload;
+    }
+
+    function safeHtml(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function playerStatusLabel(room, playerId) {
+      const match = room.currentMatch;
+      if (!match) return '-';
+      const player = (match.players || []).find(p => p.playerId === playerId);
+      if (!player) return '-';
+      if (player.status === 'FINISHED' && player.result) {
+        return `FINISHED (IGT ${player.result.igtMs} / RTA ${player.result.rttMs})`;
+      }
+      if (player.status === 'LEAVE') {
+        return `LEAVE (${player.leaveReason || '?'})`;
+      }
+      return player.status;
+    }
+
+    async function runAction(actionName, fn) {
+      try {
+        setStatus(`Running: ${actionName}...`);
+        await fn();
+        setStatus(`Done: ${actionName}`);
+        await refresh();
+      } catch (e) {
+        setStatus(`Failed: ${actionName} -> ${e.message}`, true);
+      }
+    }
+
+    function renderDetached(players) {
+      if (!players || players.length === 0) {
+        detachedEl.innerHTML = '<span class="muted">No detached players</span>';
+        return;
+      }
+      detachedEl.innerHTML = players.map(p =>
+        `<div><code>${safeHtml(p.playerId)}</code> ${safeHtml(p.name)} | ${safeHtml(p.connectionState)} | lastSeen=${safeHtml(p.lastSeenAtMs)}</div>`
+      ).join('');
+    }
+
+    function renderRooms(overview) {
+      const rooms = overview.rooms || [];
+      if (rooms.length === 0) {
+        roomsEl.innerHTML = '<div class="card"><span class="muted">No active rooms</span></div>';
+        return;
+      }
+
+      roomsEl.innerHTML = rooms.map(room => {
+        const active = room.currentMatch ? '<span class="badge warn">MATCH ACTIVE</span>' : '<span class="badge ok">NO ACTIVE MATCH</span>';
+        const pending = room.pendingMatch ? '<span class="badge ok">PENDING ROLL</span>' : '<span class="badge">NO PENDING</span>';
+        const readyCheck = room.readyCheck ? '<span class="badge">READY-CHECK</span>' : '';
+        const playerRows = (room.players || []).map(player => `
+          <tr>
+            <td><code>${safeHtml(player.playerId)}</code></td>
+            <td>${safeHtml(player.name)} ${player.playerId === room.leaderId ? '<span class="badge ok">LEADER</span>' : ''}</td>
+            <td>${safeHtml(player.connectionState)}</td>
+            <td>${player.pendingRemoval ? '<span class="badge warn">yes</span>' : 'no'}</td>
+            <td>${safeHtml(playerStatusLabel(room, player.playerId))}</td>
+            <td>
+              <div class="row">
+                <button class="warn" data-action="kick" data-room="${safeHtml(room.code)}" data-player="${safeHtml(player.playerId)}">Kick</button>
+                <button data-action="leaveMatch" data-room="${safeHtml(room.code)}" data-player="${safeHtml(player.playerId)}">Leave Match</button>
+                <button class="ok" data-action="promote" data-room="${safeHtml(room.code)}" data-player="${safeHtml(player.playerId)}">Make Leader</button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+
+        return `
+          <div class="card">
+            <div class="room-title">
+              <h2>Room <code>${safeHtml(room.code)}</code></h2>
+              <div class="row">${active}${pending}${readyCheck}</div>
+            </div>
+            <div class="row">
+              <button class="warn" data-action="abort" data-room="${safeHtml(room.code)}">Abort Match</button>
+              <button data-action="cleanDisconnected" data-room="${safeHtml(room.code)}">Remove Disconnected</button>
+              <button class="warn" data-action="deleteRoom" data-room="${safeHtml(room.code)}">Delete Room</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Player ID</th>
+                  <th>Name</th>
+                  <th>Connection</th>
+                  <th>Pending Removal</th>
+                  <th>Match Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>${playerRows}</tbody>
+            </table>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function refresh() {
+      try {
+        const overview = await api('/admin/api/overview');
+        renderDetached(overview.detachedPlayers || []);
+        renderRooms(overview);
+        setStatus(`Updated at ${new Date(overview.generatedAtMs).toLocaleTimeString()} | rooms=${(overview.rooms || []).length}`);
+      } catch (e) {
+        setStatus(`Refresh failed: ${e.message}`, true);
+      }
+    }
+
+    document.getElementById('saveToken').addEventListener('click', () => {
+      localStorage.setItem('item-race-admin-token', tokenInput.value.trim());
+      setStatus('Token saved locally');
+    });
+
+    document.getElementById('refresh').addEventListener('click', refresh);
+
+    document.getElementById('evict').addEventListener('click', () => runAction('evict stale', () =>
+      api('/admin/api/evict-stale', 'POST')
+    ));
+
+    roomsEl.addEventListener('click', (event) => {
+      const btn = event.target.closest('button[data-action]');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      const room = btn.getAttribute('data-room');
+      const player = btn.getAttribute('data-player');
+
+      if (action === 'kick') {
+        runAction(`kick ${player}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}/kick`, 'POST', { playerId: player }));
+        return;
+      }
+      if (action === 'leaveMatch') {
+        runAction(`leave-match ${player}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}/leave-match`, 'POST', { playerId: player }));
+        return;
+      }
+      if (action === 'promote') {
+        runAction(`promote ${player}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}/promote-leader`, 'POST', { playerId: player }));
+        return;
+      }
+      if (action === 'abort') {
+        runAction(`abort match ${room}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}/abort-match`, 'POST'));
+        return;
+      }
+      if (action === 'cleanDisconnected') {
+        runAction(`remove disconnected ${room}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}/remove-disconnected`, 'POST'));
+        return;
+      }
+      if (action === 'deleteRoom') {
+        if (!confirm(`Delete room ${room}?`)) return;
+        runAction(`delete room ${room}`, () => api(`/admin/api/rooms/${encodeURIComponent(room)}`, 'DELETE'));
+      }
+    });
+
+    refresh();
+  </script>
+</body>
+</html>

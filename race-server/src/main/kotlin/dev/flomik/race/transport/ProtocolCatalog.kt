@@ -222,6 +222,8 @@ fun buildOpenApiJson(): String {
             put("/docs/protocol", buildPathSpec("Structured websocket protocol catalog"))
             put("/docs/openapi.json", buildPathSpec("OpenAPI document"))
             put("/docs/asyncapi.json", buildPathSpec("AsyncAPI document"))
+            put("/admin", buildPathSpec("Admin web console"))
+            put("/admin/api/overview", buildPathSpec("Admin API overview (token required)"))
         })
         put("x-websocket", buildJsonObject {
             put("path", JsonPrimitive(catalog.websocketPath))

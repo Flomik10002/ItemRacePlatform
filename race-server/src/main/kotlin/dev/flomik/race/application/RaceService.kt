@@ -151,6 +151,82 @@ class RaceService(
         playersInSameRoom(playerId).ifEmpty { setOf(playerId) }
     }
 
+    suspend fun touchHeartbeat(
+        playerId: PlayerId,
+        sessionId: SessionId,
+    ): Boolean = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val session = sessionsByPlayerId[playerId] ?: return@withLock false
+        if (session.sessionId != sessionId) return@withLock false
+        if (session.connectionState != ConnectionState.CONNECTED) return@withLock false
+
+        val now = now()
+        session.lastSeenAt = now
+        playersById[playerId]?.lastSeenAt = now
+        true
+    }
+
+    suspend fun evictInactiveDisconnectedPlayers(
+        inactivityTimeoutMs: Long,
+    ): Set<PlayerId> = mutex.withLock {
+        if (inactivityTimeoutMs <= 0L) return@withLock emptySet()
+
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+
+        val stalePlayerIds = playersById.keys
+            .filter { playerId ->
+                val session = sessionsByPlayerId[playerId]
+                if (session?.connectionState == ConnectionState.CONNECTED) {
+                    return@filter false
+                }
+
+                val lastSeenAt = session?.lastSeenAt ?: playersById[playerId]?.lastSeenAt ?: now
+                Duration.between(lastSeenAt, now).toMillis() >= inactivityTimeoutMs
+            }
+            .sorted()
+
+        if (stalePlayerIds.isEmpty()) {
+            return@withLock emptySet()
+        }
+
+        var changed = false
+        val affected = linkedSetOf<PlayerId>()
+
+        for (playerId in stalePlayerIds) {
+            val profile = playersById[playerId] ?: continue
+            val session = sessionsByPlayerId[playerId]
+            if (session?.connectionState == ConnectionState.CONNECTED) {
+                continue
+            }
+
+            val lastSeenAt = session?.lastSeenAt ?: profile.lastSeenAt
+            if (Duration.between(lastSeenAt, now).toMillis() < inactivityTimeoutMs) {
+                continue
+            }
+
+            val room = findRoomByPlayer(playerId)
+            if (room == null) {
+                sessionsByPlayerId.remove(playerId)
+                playersById.remove(playerId)
+                changed = true
+                continue
+            }
+
+            affected.addAll(leaveRoomLocked(room, playerId, LeaveReason.RECONNECT_TIMEOUT, now))
+            changed = true
+        }
+
+        if (!changed) {
+            return@withLock emptySet()
+        }
+
+        validateGlobalState()
+        persistStateLocked()
+        affected
+    }
+
     suspend fun handleReconnectTimeout(
         playerId: PlayerId,
         sessionId: SessionId,
@@ -174,27 +250,7 @@ class RaceService(
             persistStateLocked()
             return@withLock emptySet()
         }
-        val affected = room.players.toMutableSet().apply { add(playerId) }
-
-        val match = activeMatch(room)
-        if (match == null) {
-            removePlayerFromRoom(room, playerId)
-            validateGlobalState()
-            persistStateLocked()
-            return@withLock affected
-        }
-
-        val state = match.players[playerId]
-            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
-
-        if (state.status == PlayerStatus.RUNNING) {
-            state.leave(LeaveReason.RECONNECT_TIMEOUT, now)
-            match.updatedAt = now
-        }
-
-        room.pendingRemovals.add(playerId)
-        ensureLeader(room)
-        completeMatchIfNeeded(room, match, now)
+        val affected = leaveRoomLocked(room, playerId, LeaveReason.RECONNECT_TIMEOUT, now)
 
         validateGlobalState()
         persistStateLocked()
@@ -277,34 +333,17 @@ class RaceService(
         room.players.toSet().plus(playerId)
     }
 
-    suspend fun leaveRoom(playerId: PlayerId): Set<PlayerId> = mutex.withLock {
+    suspend fun leaveRoom(
+        playerId: PlayerId,
+        reason: LeaveReason = LeaveReason.MANUAL,
+    ): Set<PlayerId> = mutex.withLock {
         hydrateFromStoreIfNeeded()
-        pruneExpiredReadyChecks(now())
+        val now = now()
+        pruneExpiredReadyChecks(now)
         val room = findRoomByPlayer(playerId)
             ?: throw DomainException("PLAYER_NOT_IN_ROOM", "Player is not in a room")
 
-        val now = now()
-        val affected = room.players.toMutableSet().apply { add(playerId) }
-        val match = activeMatch(room)
-
-        if (match == null) {
-            removePlayerFromRoom(room, playerId)
-            validateGlobalState()
-            persistStateLocked()
-            return@withLock affected
-        }
-
-        val state = match.players[playerId]
-            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
-
-        if (state.status == PlayerStatus.RUNNING) {
-            state.leave(LeaveReason.MANUAL, now)
-            match.updatedAt = now
-        }
-
-        room.pendingRemovals.add(playerId)
-        ensureLeader(room)
-        completeMatchIfNeeded(room, match, now)
+        val affected = leaveRoomLocked(room, playerId, reason, now)
 
         validateGlobalState()
         persistStateLocked()
@@ -572,6 +611,172 @@ class RaceService(
         )
     }
 
+    suspend fun adminOverview(): AdminOverviewView = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+
+        AdminOverviewView(
+            generatedAtMs = now.toEpochMilli(),
+            reconnectGraceMs = reconnectGraceMs,
+            rooms = roomsById.values
+                .sortedBy { it.code }
+                .map { room -> room.toView() },
+            detachedPlayers = playersById.values
+                .filter { profile -> playerRoomId[profile.id] == null }
+                .sortedBy { it.id }
+                .map { profile ->
+                    val session = sessionsByPlayerId[profile.id]
+                    AdminDetachedPlayerView(
+                        playerId = profile.id,
+                        name = profile.name,
+                        connectionState = session?.connectionState ?: ConnectionState.DISCONNECTED,
+                        lastSeenAtMs = (session?.lastSeenAt ?: profile.lastSeenAt).toEpochMilli(),
+                    )
+                },
+        )
+    }
+
+    suspend fun adminKickPlayer(
+        roomCodeRaw: String,
+        playerId: PlayerId,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+        if (playerId !in room.players) {
+            throw DomainException("PLAYER_NOT_IN_ROOM", "Player '$playerId' is not in room '${room.code}'")
+        }
+
+        val affected = leaveRoomLocked(room, playerId, LeaveReason.KICK, now)
+        validateGlobalState()
+        persistStateLocked()
+        affected
+    }
+
+    suspend fun adminForceLeaveMatch(
+        roomCodeRaw: String,
+        playerId: PlayerId,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+        val match = activeMatch(room)
+            ?: throw DomainException("NO_ACTIVE_MATCH", "No active match in room '${room.code}'")
+        if (playerId !in room.players) {
+            throw DomainException("PLAYER_NOT_IN_ROOM", "Player '$playerId' is not in room '${room.code}'")
+        }
+        val state = match.players[playerId]
+            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
+
+        if (state.status == PlayerStatus.RUNNING) {
+            state.leave(LeaveReason.KICK, now)
+            match.updatedAt = now
+        }
+        completeMatchIfNeeded(room, match, now)
+
+        validateGlobalState()
+        persistStateLocked()
+        return@withLock room.players.toSet().plus(playerId)
+    }
+
+    suspend fun adminPromoteLeader(
+        roomCodeRaw: String,
+        newLeaderId: PlayerId,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+        if (newLeaderId !in room.players || newLeaderId in room.pendingRemovals) {
+            throw DomainException(
+                "INVALID_LEADER",
+                "Player '$newLeaderId' cannot be promoted in room '${room.code}'",
+            )
+        }
+
+        room.leaderId = newLeaderId
+        validateGlobalState()
+        persistStateLocked()
+        room.players.toSet()
+    }
+
+    suspend fun adminAbortMatch(
+        roomCodeRaw: String,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+        val match = activeMatch(room)
+            ?: throw DomainException("NO_ACTIVE_MATCH", "No active match in room '${room.code}'")
+
+        val affected = room.players.toMutableSet().apply { addAll(room.pendingRemovals) }
+        match.complete(now)
+        room.currentMatchId = null
+        room.pendingMatch = PendingMatchConfig(
+            targetItem = match.targetItem,
+            seed = match.seed,
+            rolledAt = now,
+            revision = match.revision,
+        )
+        room.readyCheck = null
+        applyPendingRemovals(room)
+        matchesById.remove(match.id)
+
+        validateGlobalState()
+        persistStateLocked()
+        affected
+    }
+
+    suspend fun adminRemoveDisconnectedPlayers(
+        roomCodeRaw: String,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        val now = now()
+        pruneExpiredReadyChecks(now)
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+
+        val disconnected = room.players
+            .filter { playerId -> sessionsByPlayerId[playerId]?.connectionState != ConnectionState.CONNECTED }
+            .toList()
+
+        if (disconnected.isEmpty()) {
+            return@withLock emptySet()
+        }
+
+        val affected = linkedSetOf<PlayerId>()
+        for (playerId in disconnected) {
+            if (playerId !in room.players) continue
+            affected.addAll(leaveRoomLocked(room, playerId, LeaveReason.RECONNECT_TIMEOUT, now))
+        }
+
+        validateGlobalState()
+        persistStateLocked()
+        affected
+    }
+
+    suspend fun adminDeleteRoom(
+        roomCodeRaw: String,
+    ): Set<PlayerId> = mutex.withLock {
+        hydrateFromStoreIfNeeded()
+        pruneExpiredReadyChecks(now())
+        val room = findRoomByCodeOrThrow(roomCodeRaw)
+
+        val affected = room.players.toMutableSet().apply { addAll(room.pendingRemovals) }
+        val roomPlayers = room.players.toList()
+        for (playerId in roomPlayers) {
+            playerRoomId.remove(playerId)
+        }
+        deleteRoom(room)
+        roomPlayers.forEach(::pruneDetachedDisconnectedPlayer)
+
+        validateGlobalState()
+        persistStateLocked()
+        affected
+    }
+
     private suspend fun hydrateFromStoreIfNeeded() {
         if (hydratedFromStore) {
             return
@@ -825,6 +1030,34 @@ class RaceService(
         }
     }
 
+    private fun leaveRoomLocked(
+        room: Room,
+        playerId: PlayerId,
+        reason: LeaveReason,
+        now: Instant,
+    ): Set<PlayerId> {
+        val affected = room.players.toMutableSet().apply { add(playerId) }
+        val match = activeMatch(room)
+
+        if (match == null) {
+            removePlayerFromRoom(room, playerId)
+            return affected
+        }
+
+        val state = match.players[playerId]
+            ?: throw DomainException("INVARIANT_VIOLATION", "Player in room is absent in active match")
+
+        if (state.status == PlayerStatus.RUNNING) {
+            state.leave(reason, now)
+            match.updatedAt = now
+        }
+
+        room.pendingRemovals.add(playerId)
+        ensureLeader(room)
+        completeMatchIfNeeded(room, match, now)
+        return affected
+    }
+
     private fun removePlayerFromRoom(room: Room, playerId: PlayerId) {
         room.players.remove(playerId)
         room.pendingRemovals.remove(playerId)
@@ -884,7 +1117,11 @@ class RaceService(
 
     private fun pruneDetachedDisconnectedPlayer(playerId: PlayerId) {
         if (playerRoomId.containsKey(playerId)) return
-        val session = sessionsByPlayerId[playerId] ?: return
+        val session = sessionsByPlayerId[playerId]
+        if (session == null) {
+            playersById.remove(playerId)
+            return
+        }
         if (session.connectionState != ConnectionState.DISCONNECTED) return
         sessionsByPlayerId.remove(playerId)
         playersById.remove(playerId)
@@ -903,6 +1140,12 @@ class RaceService(
     private fun findRoomByCode(roomCode: String): Room? {
         val roomId = roomIdByCode[roomCode] ?: return null
         return roomsById[roomId]
+    }
+
+    private fun findRoomByCodeOrThrow(roomCodeRaw: String): Room {
+        val roomCode = normalizeRoomCode(roomCodeRaw)
+        return findRoomByCode(roomCode)
+            ?: throw DomainException("ROOM_NOT_FOUND", "Room '$roomCode' does not exist")
     }
 
     private fun activeMatch(room: Room): Match? {

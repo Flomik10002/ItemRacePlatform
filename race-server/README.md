@@ -35,6 +35,7 @@ Server listens on `:8080` by default.
 - `GET /` - service status
 - `GET /health` - health check
 - `WS /race` - race protocol endpoint
+- `GET /admin` - admin web console
 
 ## Docs endpoints
 
@@ -42,6 +43,8 @@ Server listens on `:8080` by default.
 - `GET /docs/protocol` - structured protocol catalog
 - `GET /docs/openapi.json` - OpenAPI for HTTP endpoints
 - `GET /docs/asyncapi.json` - AsyncAPI for websocket protocol
+
+Admin API endpoints are mounted under `GET/POST/DELETE /admin/api/*` and require admin token (`X-Admin-Token` header or `Authorization: Bearer <token>`).
 
 ## Additional docs
 
@@ -76,7 +79,12 @@ Environment variables (override config):
 - `RACE_DB_USER`
 - `RACE_DB_PASSWORD`
 - `RACE_RECONNECT_GRACE_MS`
+- `RACE_PING_TIMEOUT_MS`
+- `RACE_ADMIN_ENABLED`
+- `RACE_ADMIN_TOKEN`
 - `RACE_TARGET_ITEMS_FILE`
+
+If `RACE_ADMIN_TOKEN` is not configured, server falls back to `7f3c9a1e4b82d6c0f5a97e3b2d8c4f1a6b9e2d7c8a1f0b3e4c6d9a2f7b8c1e5` and logs a warning. Set a strong token in production.
 
 Target items are loaded from:
 

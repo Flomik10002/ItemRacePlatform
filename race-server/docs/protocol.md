@@ -62,8 +62,24 @@ Contains:
 - if grace timeout expires while still disconnected:
   - player transitions to `LEAVE`
   - reason: `RECONNECT_TIMEOUT`
+- if heartbeat (`ping`) is missing for `race.ping-timeout-ms` (default 180000 ms):
+  - server forces room leave with `RECONNECT_TIMEOUT`
+  - stale disconnected players are periodically evicted as well
 
 ## Machine-readable specs
 
 - `/docs/protocol`
 - `/docs/asyncapi.json`
+
+## Admin API / Console
+
+- Admin UI: `/admin`
+- Admin JSON API: `/admin/api/*`
+- Auth: `X-Admin-Token` header or `Authorization: Bearer <token>`
+- Use cases:
+  - inspect room/match/player status live
+  - force `leave_match` for stuck player
+  - kick player from room
+  - abort active match into pending state
+  - remove disconnected players
+  - delete broken room

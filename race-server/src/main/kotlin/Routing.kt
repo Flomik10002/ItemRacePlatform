@@ -12,7 +12,7 @@ import io.ktor.server.routing.routing
 import java.time.Instant
 import kotlinx.serialization.Serializable
 
-fun Application.configureRouting() {
+fun Application.configureRouting(adminEnabled: Boolean) {
     routing {
         get("/") {
             call.respond(RootResponse(service = "race-server", status = "ok"))
@@ -45,6 +45,15 @@ fun Application.configureRouting() {
                 text = docsHtml(),
                 contentType = ContentType.Text.Html,
             )
+        }
+
+        if (adminEnabled) {
+            get("/admin") {
+                call.respondText(
+                    text = adminHtmlContent,
+                    contentType = ContentType.Text.Html,
+                )
+            }
         }
     }
 }
@@ -93,6 +102,7 @@ private fun docsHtml(): String {
       <li><a href="/docs/protocol">/docs/protocol</a> - structured websocket protocol catalog</li>
       <li><a href="/docs/openapi.json">/docs/openapi.json</a> - OpenAPI (HTTP endpoints)</li>
       <li><a href="/docs/asyncapi.json">/docs/asyncapi.json</a> - AsyncAPI (websocket messages)</li>
+      <li><a href="/admin">/admin</a> - admin console (token required for API)</li>
     </ul>
   </div>
   <div class="block">
@@ -102,4 +112,14 @@ private fun docsHtml(): String {
 </body>
 </html>
 """.trimIndent()
+}
+
+private val adminHtmlContent: String by lazy {
+    loadClasspathText("admin-console.html")
+}
+
+private fun loadClasspathText(path: String): String {
+    val stream = Thread.currentThread().contextClassLoader.getResourceAsStream(path)
+        ?: error("Classpath resource not found: $path")
+    return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
 }

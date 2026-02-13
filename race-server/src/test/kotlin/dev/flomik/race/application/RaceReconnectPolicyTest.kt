@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class RaceReconnectPolicyTest {
     private fun createService(clock: MutableClock): RaceService {
@@ -99,5 +100,59 @@ class RaceReconnectPolicyTest {
 
         val reconnect = service.connect("p1", "Alice", firstConnect.sessionId)
         assertFalse(reconnect.resumed)
+    }
+
+    @Test
+    fun staleDisconnectedPlayerIsEvictedFromRoomAfterHeartbeatTimeout() = runTest {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val service = createService(clock)
+
+        service.connect("p1", "Alice", null)
+        val p2 = service.connect("p2", "Bob", null)
+
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+
+        service.disconnect("p2", p2.sessionId)
+        clock.advanceMillis(180_001L)
+        val affected = service.evictInactiveDisconnectedPlayers(180_000L)
+
+        assertTrue("p1" in affected)
+        assertTrue("p2" in affected)
+
+        val room = service.snapshotFor("p1").room
+        assertNotNull(room)
+        assertEquals(listOf("p1"), room.players.map { it.playerId })
+    }
+
+    @Test
+    fun staleDisconnectedRunningPlayerInMatchGetsReconnectTimeoutLeave() = runTest {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val service = createService(clock)
+
+        service.connect("p1", "Alice", null)
+        val p2 = service.connect("p2", "Bob", null)
+
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        service.disconnect("p2", p2.sessionId)
+        clock.advanceMillis(180_001L)
+        service.evictInactiveDisconnectedPlayers(180_000L)
+
+        val room = service.snapshotFor("p1").room
+        assertNotNull(room)
+        val match = room.currentMatch
+        assertNotNull(match)
+        val p2State = match.players.firstOrNull { it.playerId == "p2" }
+        assertNotNull(p2State)
+        assertEquals(PlayerStatus.LEAVE, p2State.status)
+        assertEquals(LeaveReason.RECONNECT_TIMEOUT, p2State.leaveReason)
     }
 }
