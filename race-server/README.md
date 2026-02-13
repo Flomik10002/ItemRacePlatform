@@ -76,6 +76,7 @@ Environment variables (override config):
 - `RACE_DB_USER`
 - `RACE_DB_PASSWORD`
 - `RACE_RECONNECT_GRACE_MS`
+- `RACE_PING_TIMEOUT_MS`
 - `RACE_TARGET_ITEMS_FILE`
 
 Target items are loaded from:

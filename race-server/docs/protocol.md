@@ -62,6 +62,9 @@ Contains:
 - if grace timeout expires while still disconnected:
   - player transitions to `LEAVE`
   - reason: `RECONNECT_TIMEOUT`
+- if heartbeat (`ping`) is missing for `race.ping-timeout-ms` (default 180000 ms):
+  - server forces room leave with `RECONNECT_TIMEOUT`
+  - stale disconnected players are periodically evicted as well
 
 ## Machine-readable specs
 

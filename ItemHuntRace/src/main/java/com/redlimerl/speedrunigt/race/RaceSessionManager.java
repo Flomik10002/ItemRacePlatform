@@ -83,6 +83,7 @@ public final class RaceSessionManager {
     private static final String DEFAULT_SERVER_URI = "ws://race.flomik.xyz:8080/race";
     private static final long LOCAL_START_COUNTDOWN_MS = 10_000L;
     private static final long LEAVE_MATCH_RETRY_INTERVAL_MS = 750L;
+    private static final long HEARTBEAT_PING_INTERVAL_MS = 20_000L;
 
     private static final RaceSessionManager INSTANCE = new RaceSessionManager();
 
@@ -135,6 +136,7 @@ public final class RaceSessionManager {
     private volatile String cachedClientPlayerId = null;
     private volatile boolean pendingLeaveMatch = false;
     private long lastLeaveMatchAttemptAt = 0L;
+    private long lastHeartbeatPingAt = 0L;
 
     private RaceSessionManager() {}
 
@@ -310,6 +312,13 @@ public final class RaceSessionManager {
             sendLeaveMatchCommand();
         }
 
+        if (connectionStatus == ConnectionStatus.CONNECTED
+                && authenticated
+                && now - lastHeartbeatPingAt >= HEARTBEAT_PING_INTERVAL_MS) {
+            sendHeartbeatPing();
+            lastHeartbeatPingAt = now;
+        }
+
         if (readyCheckExpiresAtMs > 0L && now >= readyCheckExpiresAtMs) {
             readyCheckExpiresAtMs = 0L;
             readyCheckStatusByPlayerId.clear();
@@ -360,6 +369,7 @@ public final class RaceSessionManager {
         this.helloInFlight = false;
         this.pendingMessages.clear();
         this.partialMessage.setLength(0);
+        this.lastHeartbeatPingAt = 0L;
 
         if (ws != null) {
             try {
@@ -582,6 +592,7 @@ public final class RaceSessionManager {
         finishTriggered.set(false);
         pendingLeaveMatch = false;
         lastLeaveMatchAttemptAt = 0L;
+        lastHeartbeatPingAt = 0L;
 
         lastReconnectAttemptAt = 0L;
     }
@@ -594,6 +605,7 @@ public final class RaceSessionManager {
         this.lastReconnectAttemptAt = 0L;
         this.authenticated = false;
         this.helloInFlight = false;
+        this.lastHeartbeatPingAt = 0L;
         ensureHelloSent(ws);
     }
 
@@ -604,6 +616,7 @@ public final class RaceSessionManager {
         this.helloInFlight = false;
         this.healthStatus = HealthStatus.OFFLINE;
         this.lastError = err != null ? err.getMessage() : "Connection failed";
+        this.lastHeartbeatPingAt = 0L;
     }
 
     private CompletionStage<WebSocket> sendHello(WebSocket ws) {
@@ -626,6 +639,12 @@ public final class RaceSessionManager {
     private void sendLeaveMatchCommand() {
         JsonObject msg = new JsonObject();
         msg.addProperty("type", "leave_match");
+        send(msg);
+    }
+
+    private void sendHeartbeatPing() {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "ping");
         send(msg);
     }
 
@@ -696,6 +715,7 @@ public final class RaceSessionManager {
                 this.helloInFlight = false;
                 lastError = null;
                 healthStatus = HealthStatus.ONLINE;
+                lastHeartbeatPingAt = 0L;
                 flushPending();
                 sendSyncState();
             }
@@ -1308,6 +1328,7 @@ public final class RaceSessionManager {
                 helloInFlight = false;
                 healthStatus = HealthStatus.OFFLINE;
                 lastError = reason == null || reason.isBlank() ? "Disconnected" : "Disconnected: " + reason;
+                lastHeartbeatPingAt = 0L;
             });
             return WebSocket.Listener.super.onClose(webSocket, statusCode, reason);
         }

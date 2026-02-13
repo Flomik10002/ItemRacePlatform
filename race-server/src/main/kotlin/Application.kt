@@ -21,6 +21,11 @@ fun Application.module() {
         envKey = "RACE_RECONNECT_GRACE_MS",
     )?.toLongOrNull()
         ?: 45_000L
+    val pingTimeoutMs = readConfigOrEnv(
+        configKey = "race.ping-timeout-ms",
+        envKey = "RACE_PING_TIMEOUT_MS",
+    )?.toLongOrNull()
+        ?: 180_000L
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -101,7 +106,7 @@ fun Application.module() {
     configureSerialization(json)
     configureMonitoring()
     configureRouting()
-    configureSockets(raceService, json, reconnectGraceMs)
+    configureSockets(raceService, json, reconnectGraceMs, pingTimeoutMs)
 }
 
 private fun Application.readConfigOrEnv(configKey: String, envKey: String): String? {

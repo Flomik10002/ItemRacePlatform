@@ -6,6 +6,7 @@ ktor:
         port: 8080
 race:
     reconnect-grace-ms: 45000
+    ping-timeout-ms: 180000
     target-items-file: ""
     persistence:
         enabled: true
