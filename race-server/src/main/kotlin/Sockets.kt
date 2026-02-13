@@ -2,7 +2,6 @@ package dev.flomik
 
 import dev.flomik.race.application.RaceService
 import dev.flomik.race.domain.DomainException
-import dev.flomik.race.domain.LeaveReason
 import dev.flomik.race.domain.PlayerId
 import dev.flomik.race.domain.SessionId
 import dev.flomik.race.transport.AckMessage
@@ -67,7 +66,6 @@ fun Application.configureSockets(
     val socketsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val socketsByPlayerId = ConcurrentHashMap<PlayerId, WebSocketServerSession>()
     val sessionsByPlayerId = ConcurrentHashMap<PlayerId, SessionId>()
-    val lastHeartbeatByPlayerId = ConcurrentHashMap<PlayerId, Long>()
 
     suspend fun broadcastStateSnapshots(playerIds: Set<PlayerId>) {
         for (targetPlayerId in playerIds) {
@@ -93,81 +91,6 @@ fun Application.configureSockets(
     socketsScope.launch {
         while (isActive) {
             delay(10_000L)
-
-            val nowMs = System.currentTimeMillis()
-            val candidatePlayerIds = sessionsByPlayerId.keys.toList()
-
-            for (playerId in candidatePlayerIds) {
-                val sessionId = sessionsByPlayerId[playerId] ?: continue
-                val lastHeartbeatAt = lastHeartbeatByPlayerId[playerId] ?: continue
-                if (nowMs - lastHeartbeatAt < effectivePingTimeoutMs) {
-                    continue
-                }
-
-                val latestSessionId = sessionsByPlayerId[playerId] ?: continue
-                if (latestSessionId != sessionId) {
-                    continue
-                }
-
-                logger.info(
-                    "No heartbeat from player {} for {}ms, forcing room leave",
-                    playerId,
-                    nowMs - lastHeartbeatAt,
-                )
-
-                val leaveAffected = try {
-                    raceService.leaveRoom(
-                        playerId = playerId,
-                        reason = LeaveReason.RECONNECT_TIMEOUT,
-                    )
-                } catch (e: DomainException) {
-                    if (e.code != "PLAYER_NOT_IN_ROOM") {
-                        logger.warn("Failed to apply timeout leave for player {}", playerId, e)
-                    }
-                    emptySet()
-                } catch (e: Exception) {
-                    logger.warn("Failed to apply timeout leave for player {}", playerId, e)
-                    emptySet()
-                }
-                broadcastStateSnapshots(leaveAffected)
-
-                val disconnectAffected = runCatching {
-                    raceService.disconnect(playerId, sessionId)
-                }.onFailure {
-                    logger.debug("Failed to disconnect timed out player {}", playerId, it)
-                }.getOrDefault(emptySet())
-                broadcastStateSnapshots(disconnectAffected)
-
-                val socket = socketsByPlayerId[playerId]
-                if (socket != null) {
-                    socketsByPlayerId.remove(playerId, socket)
-                } else {
-                    socketsByPlayerId.remove(playerId)
-                }
-                if (sessionsByPlayerId.remove(playerId, sessionId)) {
-                    lastHeartbeatByPlayerId.remove(playerId)
-                }
-
-                if (socket != null) {
-                    runCatching {
-                        socket.close(
-                            CloseReason(
-                                code = CloseReason.Codes.NORMAL,
-                                message = "Ping timeout",
-                            ),
-                        )
-                    }
-                }
-
-                launch {
-                    delay(reconnectGraceMs)
-                    val timeoutAffected = raceService.handleReconnectTimeout(
-                        playerId = playerId,
-                        sessionId = sessionId,
-                    )
-                    broadcastStateSnapshots(timeoutAffected)
-                }
-            }
 
             val staleDisconnectedAffected = runCatching {
                 raceService.evictInactiveDisconnectedPlayers(effectivePingTimeoutMs)
@@ -339,7 +262,6 @@ fun Application.configureSockets(
                         val actor = currentPlayerId
                         val sessionId = currentSessionId
                         if (actor != null && sessionId != null) {
-                            lastHeartbeatByPlayerId[actor] = System.currentTimeMillis()
                             raceService.touchHeartbeat(actor, sessionId)
                         }
 
@@ -366,7 +288,6 @@ fun Application.configureSockets(
                                 currentPlayerId = parsed.playerId
                                 currentSessionId = result.sessionId
                                 sessionsByPlayerId[parsed.playerId] = result.sessionId
-                                lastHeartbeatByPlayerId[parsed.playerId] = System.currentTimeMillis()
 
                                 val previousSocket = socketsByPlayerId.put(parsed.playerId, this)
                                 if (previousSocket != null && previousSocket != this) {
@@ -488,9 +409,7 @@ fun Application.configureSockets(
                 if (playerId != null && sessionId != null) {
                     val removedCurrentSocket = socketsByPlayerId.remove(playerId, this)
                     if (removedCurrentSocket) {
-                        if (sessionsByPlayerId.remove(playerId, sessionId)) {
-                            lastHeartbeatByPlayerId.remove(playerId)
-                        }
+                        sessionsByPlayerId.remove(playerId, sessionId)
 
                         val affected = raceService.disconnect(
                             playerId = playerId,
