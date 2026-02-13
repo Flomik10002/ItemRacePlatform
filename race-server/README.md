@@ -84,7 +84,7 @@ Environment variables (override config):
 - `RACE_ADMIN_TOKEN`
 - `RACE_TARGET_ITEMS_FILE`
 
-If `RACE_ADMIN_TOKEN` is not configured, server falls back to `dev-admin-token` and logs a warning. Set a strong token in production.
+If `RACE_ADMIN_TOKEN` is not configured, server falls back to `7f3c9a1e4b82d6c0f5a97e3b2d8c4f1a6b9e2d7c8a1f0b3e4c6d9a2f7b8c1e5` and logs a warning. Set a strong token in production.
 
 Target items are loaded from:
 

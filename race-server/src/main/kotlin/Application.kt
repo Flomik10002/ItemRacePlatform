@@ -34,7 +34,7 @@ fun Application.module() {
     val adminToken = readConfigOrEnv(
         configKey = "race.admin.token",
         envKey = "RACE_ADMIN_TOKEN",
-    )?.trim()?.takeIf { it.isNotEmpty() } ?: "dev-admin-token".also {
+    )?.trim()?.takeIf { it.isNotEmpty() } ?: "7f3c9a1e4b82d6c0f5a97e3b2d8c4f1a6b9e2d7c8a1f0b3e4c6d9a2f7b8c1e5".also {
         environment.log.warn(
             "Admin token is not configured; using insecure default token '{}'. Set RACE_ADMIN_TOKEN in production.",
             it,
