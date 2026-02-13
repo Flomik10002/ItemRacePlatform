@@ -79,7 +79,7 @@ Environment variables (override config):
 - `RACE_DB_USER`
 - `RACE_DB_PASSWORD`
 - `RACE_RECONNECT_GRACE_MS`
-- `RACE_PING_TIMEOUT_MS`
+- `RACE_PING_TIMEOUT_MS` (eviction timeout for already disconnected inactive players)
 - `RACE_ADMIN_ENABLED`
 - `RACE_ADMIN_TOKEN`
 - `RACE_TARGET_ITEMS_FILE`

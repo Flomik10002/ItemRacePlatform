@@ -155,4 +155,37 @@ class RaceReconnectPolicyTest {
         assertEquals(PlayerStatus.LEAVE, p2State.status)
         assertEquals(LeaveReason.RECONNECT_TIMEOUT, p2State.leaveReason)
     }
+
+    @Test
+    fun timeoutForOldSessionIsIgnoredAfterReconnectWithNewSessionId() = runTest {
+        val clock = MutableClock(Instant.parse("2026-01-01T00:00:00Z"))
+        val service = createService(clock)
+
+        val firstSession = service.connect("p1", "Alice", null)
+        service.connect("p2", "Bob", null)
+
+        service.createRoom("p1")
+        val roomCode = service.snapshotFor("p1").room?.code
+        assertNotNull(roomCode)
+        service.joinRoom("p2", roomCode)
+        service.rollMatch("p1")
+        service.startMatch("p1")
+
+        service.disconnect("p1", firstSession.sessionId)
+        val reconnect = service.connect("p1", "Alice", null)
+        assertFalse(reconnect.resumed)
+
+        clock.advanceMillis(46_000L)
+        service.handleReconnectTimeout("p1", firstSession.sessionId)
+
+        val room = service.snapshotFor("p2").room
+        assertNotNull(room)
+        assertEquals(listOf("p1", "p2"), room.players.map { it.playerId })
+
+        val match = room.currentMatch
+        assertNotNull(match)
+        val p1State = match.players.firstOrNull { it.playerId == "p1" }
+        assertNotNull(p1State)
+        assertEquals(PlayerStatus.RUNNING, p1State.status)
+    }
 }
