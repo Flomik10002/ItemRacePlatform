@@ -1,12 +1,14 @@
 package dev.flomik.race.domain
 
 import java.time.Instant
+import kotlinx.serialization.Serializable
 
 typealias RoomId = String
 typealias MatchId = String
 typealias PlayerId = String
 typealias SessionId = String
 
+@Serializable
 enum class PlayerStatus {
     RUNNING,
     FINISHED,
@@ -14,22 +16,26 @@ enum class PlayerStatus {
     LEAVE,
 }
 
+@Serializable
 enum class LeaveReason {
     MANUAL,
     RECONNECT_TIMEOUT,
     KICK,
 }
 
+@Serializable
 enum class ConnectionState {
     CONNECTED,
     DISCONNECTED,
 }
 
+@Serializable
 enum class MatchLifecycleStatus {
     ACTIVE,
     COMPLETED,
 }
 
+@Serializable
 enum class ReadyCheckStatus {
     READY,
     NOT_READY,
@@ -86,6 +92,7 @@ data class PlayerState(
     var leftAt: Instant? = null,
 )
 
+@Serializable
 data class PlayerResult(
     val rttMs: Long,
     val igtMs: Long,

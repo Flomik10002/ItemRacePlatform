@@ -1,6 +1,7 @@
 package dev.flomik
 
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.config.MapApplicationConfig
@@ -66,5 +67,46 @@ class ApplicationTest {
         val asyncapi = client.get("/docs/asyncapi.json")
         assertEquals(HttpStatusCode.OK, asyncapi.status)
         assertTrue(asyncapi.bodyAsText().contains("\"asyncapi\""))
+    }
+
+    @Test
+    fun adminConsoleEndpointIsAvailable() = testApplication {
+        environment {
+            config = MapApplicationConfig(
+                "race.persistence.enabled" to "false",
+                "race.admin.enabled" to "true",
+                "race.admin.token" to "test-token",
+            )
+        }
+        application {
+            module()
+        }
+
+        val admin = client.get("/admin")
+        assertEquals(HttpStatusCode.OK, admin.status)
+        assertTrue(admin.bodyAsText().contains("Item Race Admin Console"))
+    }
+
+    @Test
+    fun adminApiRequiresToken() = testApplication {
+        environment {
+            config = MapApplicationConfig(
+                "race.persistence.enabled" to "false",
+                "race.admin.enabled" to "true",
+                "race.admin.token" to "test-token",
+            )
+        }
+        application {
+            module()
+        }
+
+        val unauthorized = client.get("/admin/api/overview")
+        assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+        val authorized = client.get("/admin/api/overview") {
+            header("X-Admin-Token", "test-token")
+        }
+        assertEquals(HttpStatusCode.OK, authorized.status)
+        assertTrue(authorized.bodyAsText().contains("\"rooms\""))
     }
 }

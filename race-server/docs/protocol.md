@@ -70,3 +70,16 @@ Contains:
 
 - `/docs/protocol`
 - `/docs/asyncapi.json`
+
+## Admin API / Console
+
+- Admin UI: `/admin`
+- Admin JSON API: `/admin/api/*`
+- Auth: `X-Admin-Token` header or `Authorization: Bearer <token>`
+- Use cases:
+  - inspect room/match/player status live
+  - force `leave_match` for stuck player
+  - kick player from room
+  - abort active match into pending state
+  - remove disconnected players
+  - delete broken room

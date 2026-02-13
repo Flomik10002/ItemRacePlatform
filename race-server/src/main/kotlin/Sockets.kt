@@ -18,8 +18,16 @@ import dev.flomik.race.transport.WelcomeMessage
 import dev.flomik.race.transport.isIgnorableAdvancementId
 import dev.flomik.race.transport.toDto
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationStopped
+import io.ktor.server.application.call
 import io.ktor.server.application.install
+import io.ktor.server.request.receive
+import io.ktor.server.response.respond
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.WebSocketServerSession
@@ -32,6 +40,7 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import java.util.concurrent.ConcurrentHashMap
+import io.ktor.http.HttpStatusCode
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +49,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -49,6 +59,8 @@ fun Application.configureSockets(
     json: Json,
     reconnectGraceMs: Long,
     pingTimeoutMs: Long,
+    adminEnabled: Boolean,
+    adminToken: String,
 ) {
     val logger = LoggerFactory.getLogger("RaceSockets")
     val effectivePingTimeoutMs = pingTimeoutMs.coerceAtLeast(1_000L)
@@ -174,6 +186,118 @@ fun Application.configureSockets(
     }
 
     routing {
+        if (adminEnabled) {
+            route("/admin/api") {
+                suspend fun isAuthorized(call: ApplicationCall): Boolean {
+                    val headerToken = call.request.headers["X-Admin-Token"]?.trim()
+                    val bearerToken = call.request.headers["Authorization"]
+                        ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+                        ?.substringAfter("Bearer ")
+                        ?.trim()
+                    val providedToken = headerToken ?: bearerToken
+                    if (providedToken == adminToken) return true
+
+                    call.respond(
+                        HttpStatusCode.Unauthorized,
+                        AdminApiError(code = "UNAUTHORIZED", message = "Missing or invalid admin token"),
+                    )
+                    return false
+                }
+
+                suspend fun runAdminAction(
+                    call: ApplicationCall,
+                    action: String,
+                    block: suspend () -> Set<PlayerId>,
+                ) {
+                    if (!isAuthorized(call)) return
+                    try {
+                        val affected = block()
+                        broadcastStateSnapshots(affected)
+                        call.respond(
+                            AdminActionResponse(
+                                ok = true,
+                                action = action,
+                                affectedPlayerIds = affected.sorted(),
+                            ),
+                        )
+                    } catch (e: DomainException) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            AdminApiError(code = e.code, message = e.message),
+                        )
+                    } catch (e: Exception) {
+                        logger.error("Admin action '{}' failed", action, e)
+                        call.respond(
+                            HttpStatusCode.InternalServerError,
+                            AdminApiError(code = "INTERNAL_ERROR", message = "Unexpected server error"),
+                        )
+                    }
+                }
+
+                get("/overview") {
+                    if (!isAuthorized(call)) return@get
+                    call.respond(raceService.adminOverview())
+                }
+
+                post("/evict-stale") {
+                    runAdminAction(call, "evict_stale") {
+                        raceService.evictInactiveDisconnectedPlayers(effectivePingTimeoutMs)
+                    }
+                }
+
+                post("/rooms/{roomCode}/kick") {
+                    runAdminAction(call, "kick_player") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminKickPlayer(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/leave-match") {
+                    runAdminAction(call, "force_leave_match") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminForceLeaveMatch(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/promote-leader") {
+                    runAdminAction(call, "promote_leader") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        val request = call.receive<AdminPlayerRequest>()
+                        raceService.adminPromoteLeader(roomCode, request.playerId)
+                    }
+                }
+
+                post("/rooms/{roomCode}/abort-match") {
+                    runAdminAction(call, "abort_match") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminAbortMatch(roomCode)
+                    }
+                }
+
+                post("/rooms/{roomCode}/remove-disconnected") {
+                    runAdminAction(call, "remove_disconnected") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminRemoveDisconnectedPlayers(roomCode)
+                    }
+                }
+
+                delete("/rooms/{roomCode}") {
+                    runAdminAction(call, "delete_room") {
+                        val roomCode = call.parameters["roomCode"]
+                            ?: throw DomainException("INVALID_ROOM_CODE", "Missing roomCode path parameter")
+                        raceService.adminDeleteRoom(roomCode)
+                    }
+                }
+            }
+        }
+
         webSocket("/race") {
             var currentPlayerId: PlayerId? = null
             var currentSessionId: SessionId? = null
@@ -404,3 +528,21 @@ private suspend fun WebSocketServerSession.sendServerMessage(
 
     send(Frame.Text(text))
 }
+
+@Serializable
+private data class AdminPlayerRequest(
+    val playerId: String,
+)
+
+@Serializable
+private data class AdminActionResponse(
+    val ok: Boolean,
+    val action: String,
+    val affectedPlayerIds: List<String>,
+)
+
+@Serializable
+private data class AdminApiError(
+    val code: String,
+    val message: String,
+)
